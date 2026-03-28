@@ -1,0 +1,30 @@
+version: "3"
+tasks:
+  mac-install:
+    cmds:
+    - brew install gcc llvm libomp
+    desc: "Install necessary packages for building the application on macOS"
+  ubuntu-install:
+    cmds:
+    - sudo apt-get update
+    - sudo apt-get install build-essential
+    desc: "Install necessary packages for building the application on Ubuntu"
+  build:
+    env:
+      CC: /opt/homebrew/opt/llvm/bin/clang
+      CXX: /opt/homebrew/opt/llvm/bin/clang++
+      CPPFLAGS: -I/opt/homebrew/opt/libomp/include
+      LDFLAGS: -L/opt/homebrew/opt/libomp/lib
+      CFLAGS: -fopenmp -O3
+      CXXFLAGS: -fopenmp -O3
+    cmds:
+    - $CC $CPPFLAGS $CFLAGS spmv_openmp.c $LDFLAGS -lomp -o spmv_openmp
+    - $CC -O3 spmv_serial.c -o spmv_serial
+    - $CC -O3 spmv_not_csr.c -o spmv_not_csr
+    desc: "Compile the OpenMP application"
+  run:
+    cmds:
+    - ./spmv_not_csr ./testcases/test_small_uniform_50.mtx ./testcases/test_small_uniform_50.vec
+    - ./spmv_serial ./testcases/test_small_uniform_50.mtx ./testcases/test_small_uniform_50.vec
+    - OMP_NUM_THREADS=16 ./spmv_openmp ./testcases/test_small_uniform_50.mtx ./testcases/test_small_uniform_50.vec
+    desc: "Run the OpenMP application on the test_small dataset"

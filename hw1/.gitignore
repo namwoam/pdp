@@ -1,0 +1,4 @@
+# ignore executable files
+spmv_not_csr
+spmv_openmp
+spmv_serial
