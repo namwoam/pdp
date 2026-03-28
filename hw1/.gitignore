@@ -2,3 +2,6 @@
 spmv_not_csr
 spmv_openmp
 spmv_serial
+
+# ignore test files
+*.txt
