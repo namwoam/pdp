@@ -1,8 +1,14 @@
 version: "3"
 tasks:
+  download-testcases:
+    cmds:
+    - gdown https://drive.google.com/file/d/1QFsfu_536XnJLEnoHTeEC7L4iD6HI5kp/view --fuzzy
+    - unzip testcases.zip -d testcases
+    - rm testcases.zip
+    desc: "Download the test cases from Google Drive"
   mac-install:
     cmds:
-    - brew install gcc llvm libomp
+    - brew install gcc llvm libomp gdown
     desc: "Install necessary packages for building the application on macOS"
   ubuntu-install:
     cmds:
