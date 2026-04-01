@@ -42,14 +42,36 @@ int verify(int M, double *y, double *ygold) { double tol=0.02; for(int i=0;i<M;i
 /* TODO: Student implements CSR builder. Provide row_ptr, col_idx, vals_csr arrays. */
 void build_csr(int M, int N, int nnz, int *rows, int *cols, double *vals,
                int **row_ptr, int **col_idx, double **vals_csr) {
-    fprintf(stderr, "[STUDENT] build_csr() not implemented — fill this in.\n");
-    *row_ptr = calloc(M+1, sizeof(int)); *col_idx = malloc(sizeof(int)*nnz); *vals_csr = malloc(sizeof(double)*nnz);
+    *row_ptr = calloc(M+1, sizeof(int));
+    *col_idx = malloc(sizeof(int)*nnz);
+    *vals_csr = malloc(sizeof(double)*nnz);
+
+    for (int k = 0; k < nnz; k++)
+        (*row_ptr)[rows[k] + 1]++;
+
+    for (int i = 0; i < M; i++)
+        (*row_ptr)[i+1] += (*row_ptr)[i];
+
+    int *tmp = calloc(M, sizeof(int));
+    for (int k = 0; k < nnz; k++) {
+        int r = rows[k];
+        int dest = (*row_ptr)[r] + tmp[r];
+        (*col_idx)[dest] = cols[k];
+        (*vals_csr)[dest] = vals[k];
+        tmp[r]++;
+    }
+    free(tmp);
 }
 
 /* TODO: Student implements OpenMP-parallel CSR SpMV. Current stub zeroes y. */
 void spmv_csr_openmp(int M, int *row_ptr, int *col_idx, double *vals_csr, double *x, double *y) {
-    fprintf(stderr, "[STUDENT] spmv_csr_openmp() not implemented — fill this in.\n");
-    for (int i=0;i<M;i++) y[i]=0.0;
+    #pragma omp parallel for schedule(dynamic, 64)
+    for (int i = 0; i < M; i++) {
+        double sum = 0.0;
+        for (int k = row_ptr[i]; k < row_ptr[i+1]; k++)
+            sum += vals_csr[k] * x[col_idx[k]];
+        y[i] = sum;
+    }
 }
 
 int main(int argc, char **argv) {

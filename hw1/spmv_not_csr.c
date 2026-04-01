@@ -61,11 +61,14 @@ int verify(int M, double *y, double *ygold) {
 
 /* TODO: Student implements this naive COO-scan compute. For now it zeroes y and prints a note. */
 void compute_not_csr(int M, int N, int nnz, int *rows, int *cols, double *vals, double *x, double *y) {
-    /* STUDENT TASK: implement naive COO-scan that computes y = A*x
-       Example pseudo: for each k in [0,nnz): y[rows[k]] += vals[k] * x[cols[k]];
-    */
-    fprintf(stderr, "[STUDENT] compute_not_csr() not implemented — fill this in.\n");
-    for (int i=0;i<M;i++) y[i]=0.0;
+    memset(y, 0, sizeof(double) * M);
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < nnz; k++) {
+            if (rows[k] == i) {
+                y[i] += vals[k] * x[cols[k]];
+            }
+        }
+    }
 }
 
 int main(int argc, char **argv) {
