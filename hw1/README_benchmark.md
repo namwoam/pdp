@@ -6,6 +6,7 @@ This project includes a simple Python benchmark utility for:
 - Capturing hardware information for cross-machine comparison
 - Writing raw results (CSV) and summary (JSON)
 - Generating a bar chart of median runtime per dataset
+- Generating a Markdown report that embeds the visualization and hardware info
 
 ## 1) Install Poetry and dependencies
 
@@ -29,6 +30,8 @@ poetry install
 poetry run python benchmark_spmv.py --runs 7 --threads 8
 ```
 
+If `--datasets` is omitted, the script runs on all `.mtx` files under `testcases/testcases/`.
+
 Optional custom binaries/datasets:
 
 ```bash
@@ -41,10 +44,12 @@ poetry run python benchmark_spmv.py \
 
 ## 4) Outputs
 
-By default outputs are written to `bench_results/`:
+By default outputs are written to `hw1/bench_results/` (stored with source code):
 
 - `benchmark_runs_<timestamp>.csv`
 - `benchmark_summary_<timestamp>.json`
 - `benchmark_plot_<timestamp>.png`
+- `benchmark_report_<timestamp>.md`
 
 The JSON file includes a `hardware` section (OS, CPU identifiers, core counts, memory where available) to make cross-machine results comparable.
+The Markdown report includes hardware details, a median runtime table, and the plot image.

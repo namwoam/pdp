@@ -16,6 +16,7 @@ import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 
@@ -162,6 +163,63 @@ def write_plot(summary: dict, out_png: Path) -> None:
     plt.close(fig)
 
 
+def write_markdown_report(
+    payload: dict[str, Any],
+    out_md: Path,
+    out_png: Path,
+    out_csv: Path,
+    out_json: Path,
+) -> None:
+    summary = payload["summary"]
+    hardware = payload["hardware"]
+    config = payload["config"]
+
+    datasets = sorted(summary.keys())
+    binaries = sorted({b for d in datasets for b in summary[d].keys()})
+
+    lines: list[str] = []
+    lines.append("# SPMV Benchmark Report")
+    lines.append("")
+    lines.append(f"- Generated at (UTC): {payload['generated_at_utc']}")
+    lines.append(f"- All runs OK: {payload['all_ok']}")
+    lines.append(f"- Runs per case: {config['runs']}")
+    lines.append(f"- OMP_NUM_THREADS: {config['threads']}")
+    lines.append("")
+
+    lines.append("## Hardware")
+    lines.append("")
+    for key in sorted(hardware.keys()):
+        lines.append(f"- {key}: {hardware[key]}")
+    lines.append("")
+
+    lines.append("## Median Runtime (ms)")
+    lines.append("")
+    header = ["Dataset"] + binaries
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+    for ds in datasets:
+        row = [ds]
+        for b in binaries:
+            metric = summary[ds].get(b)
+            row.append(f"{metric['median_ms']:.6f}" if metric else "-")
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+
+    lines.append("## Plot")
+    lines.append("")
+    lines.append(f"![Benchmark plot]({out_png.name})")
+    lines.append("")
+
+    lines.append("## Artifacts")
+    lines.append("")
+    lines.append(f"- Raw runs CSV: {out_csv.name}")
+    lines.append(f"- Summary JSON: {out_json.name}")
+    lines.append(f"- Plot PNG: {out_png.name}")
+
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+    out_md.write_text("\n".join(lines) + "\n")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark SPMV binaries and plot results.")
     parser.add_argument(
@@ -173,25 +231,53 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--datasets",
         nargs="+",
-        default=[
-            "./testcases/testcases/test_sparse_1000",
-            "./testcases/testcases/large_sparse_5000",
-            "./testcases/testcases/huge_200k_100",
-        ],
-        help="Dataset prefixes (without extension).",
+        default=None,
+        help=(
+            "Dataset prefixes (without extension). If omitted, all .mtx files under "
+            "./testcases/testcases are used."
+        ),
     )
     parser.add_argument("--runs", type=int, default=5, help="Runs per binary/dataset.")
     parser.add_argument("--threads", type=int, default=8, help="OMP_NUM_THREADS value.")
-    parser.add_argument("--out-dir", default="./bench_results", help="Output directory.")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="Output directory (default: <script_dir>/bench_results).",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
 
-    binaries = [Path(b).resolve() for b in args.binaries]
-    datasets = [Path(d).resolve() for d in args.datasets]
-    out_dir = Path(args.out_dir).resolve()
+    script_dir = Path(__file__).resolve().parent
+
+    def _resolve_from_script(path_str: str) -> Path:
+        p = Path(path_str)
+        return p.resolve() if p.is_absolute() else (script_dir / p).resolve()
+
+    def _discover_all_datasets() -> list[Path]:
+        testcases_dir = (script_dir / "testcases" / "testcases").resolve()
+        if not testcases_dir.exists():
+            raise FileNotFoundError(f"Testcases directory not found: {testcases_dir}")
+
+        # Use every Matrix Market testcase and map to prefix path (strip .mtx).
+        dataset_prefixes = [
+            p.with_suffix("")
+            for p in sorted(testcases_dir.glob("*.mtx"))
+            if not p.name.endswith(".mtx.gold")
+        ]
+        if not dataset_prefixes:
+            raise FileNotFoundError(f"No .mtx datasets found in: {testcases_dir}")
+        return dataset_prefixes
+
+    binaries = [_resolve_from_script(b) for b in args.binaries]
+    datasets = [_resolve_from_script(d) for d in args.datasets] if args.datasets else _discover_all_datasets()
+    out_dir = (
+        _resolve_from_script(args.out_dir)
+        if args.out_dir
+        else (script_dir / "bench_results").resolve()
+    )
 
     for b in binaries:
         if not b.exists():
@@ -211,6 +297,7 @@ def main() -> int:
     out_csv = out_dir / f"benchmark_runs_{timestamp}.csv"
     out_json = out_dir / f"benchmark_summary_{timestamp}.json"
     out_png = out_dir / f"benchmark_plot_{timestamp}.png"
+    out_md = out_dir / f"benchmark_report_{timestamp}.md"
 
     write_csv(all_rows, out_csv)
     summary = summarize(all_rows)
@@ -231,10 +318,12 @@ def main() -> int:
         json.dump(payload, f, indent=2)
 
     write_plot(summary, out_png)
+    write_markdown_report(payload, out_md, out_png, out_csv, out_json)
 
     print(f"Wrote: {out_csv}")
     print(f"Wrote: {out_json}")
     print(f"Wrote: {out_png}")
+    print(f"Wrote: {out_md}")
     print(f"All runs OK: {payload['all_ok']}")
     return 0
 
