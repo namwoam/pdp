@@ -7,3 +7,8 @@ spmv_serial
 *.mtx
 *.vec
 *.gold
+
+# poetry / python benchmark outputs
+.venv/
+bench_results/
+__pycache__/

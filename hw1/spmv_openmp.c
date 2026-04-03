@@ -63,11 +63,20 @@ void build_csr(int M, int N, int nnz, int *rows, int *cols, double *vals,
     free(tmp);
 }
 
-/* TODO: Student implements OpenMP-parallel CSR SpMV. Current stub zeroes y. */
+/* Compile-time knobs for easy benchmark variants. */
 void spmv_csr_openmp(int M, int *row_ptr, int *col_idx, double *vals_csr, double *x, double *y) {
+#if defined(SPMV_USE_RUNTIME_SCHEDULE)
+    #pragma omp parallel for schedule(runtime)
+#elif defined(SPMV_USE_STATIC_SCHEDULE)
+    #pragma omp parallel for schedule(static)
+#else
     #pragma omp parallel for schedule(dynamic, 64)
+#endif
     for (int i = 0; i < M; i++) {
         double sum = 0.0;
+#if defined(SPMV_USE_SIMD)
+        #pragma omp simd reduction(+:sum)
+#endif
         for (int k = row_ptr[i]; k < row_ptr[i+1]; k++)
             sum += vals_csr[k] * x[col_idx[k]];
         y[i] = sum;
