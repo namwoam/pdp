@@ -2,6 +2,7 @@
 spmv_not_csr
 spmv_openmp
 spmv_serial
+_*
 
 # ignore test files
 *.mtx

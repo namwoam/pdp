@@ -9,6 +9,7 @@ package-mode = false
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
 matplotlib = "^3.9.0"
+pypdf = "^6.9.2"
 
 [tool.poetry.group.dev.dependencies]
 
