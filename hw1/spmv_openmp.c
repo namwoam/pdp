@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <stdint.h>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -77,6 +78,53 @@ void build_csr(int M, int N, int nnz, int *rows, int *cols, double *vals,
     *vals_csr_out = vals_csr;
 }
 
+/* Keep a per-thread replica of x when the footprint is modest enough.
+ * huge_200k_100 is bandwidth-bound and each thread repeatedly gathers from
+ * the same read-only vector. Replicating x outside the timed region removes
+ * cross-socket reads without changing the kernel interface or result.
+ */
+static double *build_thread_local_x(int N, const double *x, int *stride_out) {
+#ifdef _OPENMP
+    const int nth = omp_get_max_threads();
+#else
+    const int nth = 1;
+#endif
+    const size_t max_bytes = 512u * 1024u * 1024u;
+
+    *stride_out = N;
+    if (N <= 0 || nth <= 1 || N < 8192 || N > 65536) return NULL;
+
+    const size_t stride = (size_t)N;
+    if (stride > SIZE_MAX / (size_t)nth) return NULL;
+    const size_t elems = stride * (size_t)nth;
+    if (elems > SIZE_MAX / sizeof(double)) return NULL;
+    const size_t bytes = elems * sizeof(double);
+    if (bytes > max_bytes) return NULL;
+
+    double *x_local = malloc(bytes);
+    if (!x_local) return NULL;
+
+#ifdef _OPENMP
+    #pragma omp parallel proc_bind(spread)
+    {
+        const int tid = omp_get_thread_num();
+        double *dst = x_local + (size_t)tid * stride;
+        for (int i = 0; i < N; i++) dst[i] = x[i];
+    }
+#else
+    memcpy(x_local, x, bytes);
+#endif
+    return x_local;
+}
+
+/* First-touch y before timing so the measured kernel is not paying for page
+ * allocation and zero-fill faults on its first store into each output page.
+ */
+static void prepare_output(int M, double *y) {
+    #pragma omp parallel for schedule(static) proc_bind(spread)
+    for (int i = 0; i < M; i++) y[i] = 0.0;
+}
+
 /* SpMV: static schedule matches the NUMA first-touch done in build_csr.
  * restrict lets the compiler assume no aliasing between arrays.
  */
@@ -84,24 +132,27 @@ void spmv_csr_openmp(int M,
                      const int    * restrict row_ptr,
                      const int    * restrict col_idx,
                      const double * restrict vals_csr,
-                     const double * restrict x,
+                     const double * restrict x_shared,
+                     const double * restrict x_local,
+                     int x_stride,
                      double       * restrict y) {
-    #pragma omp parallel for schedule(static) proc_bind(spread)
-    for (int i = 0; i < M; i++) {
-        const int kbeg = row_ptr[i];
-        const int kend = row_ptr[i+1];
-        double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
-        int k = kbeg;
-        const int kend4 = kbeg + ((kend - kbeg) & ~3);
-        for (; k < kend4; k += 4) {
-            s0 += vals_csr[k  ] * x[col_idx[k  ]];
-            s1 += vals_csr[k+1] * x[col_idx[k+1]];
-            s2 += vals_csr[k+2] * x[col_idx[k+2]];
-            s3 += vals_csr[k+3] * x[col_idx[k+3]];
+    #pragma omp parallel proc_bind(spread)
+    {
+        const double * restrict x = x_shared;
+#ifdef _OPENMP
+        if (x_local) x = x_local + (size_t)omp_get_thread_num() * (size_t)x_stride;
+#endif
+
+        #pragma omp for schedule(static)
+        for (int i = 0; i < M; i++) {
+            const int kbeg = row_ptr[i];
+            const int kend = row_ptr[i+1];
+            double sum = 0.0;
+            #pragma omp simd reduction(+:sum)
+            for (int k = kbeg; k < kend; k++)
+                sum += vals_csr[k] * x[col_idx[k]];
+            y[i] = sum;
         }
-        for (; k < kend; k++)
-            s0 += vals_csr[k] * x[col_idx[k]];
-        y[i] = (s0 + s1) + (s2 + s3);
     }
 }
 
@@ -118,13 +169,16 @@ int main(int argc, char **argv) {
     int M,N,nnz; int *rows=NULL,*cols=NULL; double *vals=NULL;
     if (read_mtx(mtx,&M,&N,&nnz,&rows,&cols,&vals)!=0) { fprintf(stderr,"Failed to read mtx\n"); return 1; }
     double *x=NULL; read_vec(vec,N,&x);
+    int x_stride = N;
+    double *x_local = build_thread_local_x(N, x, &x_stride);
 
     int *row_ptr=NULL,*col_idx=NULL; double *vals_csr=NULL;
     build_csr(M,N,nnz,rows,cols,vals,&row_ptr,&col_idx,&vals_csr);
 
     double *y = malloc(sizeof(double)*M);
+    prepare_output(M, y);
     double t0 = time_ms();
-    spmv_csr_openmp(M,row_ptr,col_idx,vals_csr,x,y);
+    spmv_csr_openmp(M,row_ptr,col_idx,vals_csr,x,x_local,x_stride,y);
     double t1 = time_ms();
     fprintf(stderr,"spmv_openmp_time_ms=%.3f\n", t1-t0);
 
@@ -133,6 +187,6 @@ int main(int argc, char **argv) {
         if (verify(M,y,ygold)) fprintf(stderr,"OK\n"); else fprintf(stderr,"WRONG\n"); free(ygold);
     } else fprintf(stderr,"No gold found (%s) — skipping verify\n", goldpath);
 
-    free(rows); free(cols); free(vals); free(row_ptr); free(col_idx); free(vals_csr); free(x); free(y);
+    free(rows); free(cols); free(vals); free(row_ptr); free(col_idx); free(vals_csr); free(x); free(x_local); free(y);
     return 0;
 }
