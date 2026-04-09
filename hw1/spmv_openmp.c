@@ -39,51 +39,80 @@ int read_gold(const char *path, int M, double **ygold) { FILE *f=fopen(path,"r")
 
 int verify(int M, double *y, double *ygold) { double tol=0.02; for(int i=0;i<M;i++) if (fabs(y[i]-ygold[i])>tol) return 0; return 1; }
 
-/* TODO: Student implements CSR builder. Provide row_ptr, col_idx, vals_csr arrays. */
+/* Build CSR with parallel first-touch on col_idx/vals_csr.
+ * On this 2-socket Xeon, a serial build leaves all CSR pages on socket 0
+ * and socket-1 threads pay cross-UPI traffic during SpMV. By letting each
+ * worker zero its own rows' slice first, Linux pins those pages to the
+ * worker's local NUMA node, so the later SpMV reads are all node-local.
+ */
 void build_csr(int M, int N, int nnz, int *rows, int *cols, double *vals,
-               int **row_ptr, int **col_idx, double **vals_csr) {
-    *row_ptr = calloc(M+1, sizeof(int));
-    *col_idx = malloc(sizeof(int)*nnz);
-    *vals_csr = malloc(sizeof(double)*nnz);
+               int **row_ptr_out, int **col_idx_out, double **vals_csr_out) {
+    int    *row_ptr  = calloc(M+1, sizeof(int));
+    int    *col_idx  = malloc(sizeof(int)*nnz);
+    double *vals_csr = malloc(sizeof(double)*nnz);
 
-    for (int k = 0; k < nnz; k++)
-        (*row_ptr)[rows[k] + 1]++;
+    for (int k = 0; k < nnz; k++) row_ptr[rows[k] + 1]++;
+    for (int i = 0; i < M; i++)   row_ptr[i+1] += row_ptr[i];
 
-    for (int i = 0; i < M; i++)
-        (*row_ptr)[i+1] += (*row_ptr)[i];
+    #pragma omp parallel for schedule(static) proc_bind(spread)
+    for (int i = 0; i < M; i++) {
+        for (int k = row_ptr[i]; k < row_ptr[i+1]; k++) {
+            col_idx[k]  = 0;
+            vals_csr[k] = 0.0;
+        }
+    }
 
-    int *tmp = calloc(M, sizeof(int));
+    int *tmp = calloc(M > 0 ? (size_t)M : 0, sizeof(int));
     for (int k = 0; k < nnz; k++) {
         int r = rows[k];
-        int dest = (*row_ptr)[r] + tmp[r];
-        (*col_idx)[dest] = cols[k];
-        (*vals_csr)[dest] = vals[k];
+        int dest = row_ptr[r] + tmp[r];
+        col_idx[dest]  = cols[k];
+        vals_csr[dest] = vals[k];
         tmp[r]++;
     }
     free(tmp);
+
+    *row_ptr_out  = row_ptr;
+    *col_idx_out  = col_idx;
+    *vals_csr_out = vals_csr;
 }
 
-/* Compile-time knobs for easy benchmark variants. */
-void spmv_csr_openmp(int M, int *row_ptr, int *col_idx, double *vals_csr, double *x, double *y) {
-#if defined(SPMV_USE_RUNTIME_SCHEDULE)
-    #pragma omp parallel for schedule(runtime)
-#elif defined(SPMV_USE_STATIC_SCHEDULE)
-    #pragma omp parallel for schedule(static)
-#else
-    #pragma omp parallel for schedule(dynamic, 64)
-#endif
+/* SpMV: static schedule matches the NUMA first-touch done in build_csr.
+ * restrict lets the compiler assume no aliasing between arrays.
+ */
+void spmv_csr_openmp(int M,
+                     const int    * restrict row_ptr,
+                     const int    * restrict col_idx,
+                     const double * restrict vals_csr,
+                     const double * restrict x,
+                     double       * restrict y) {
+    #pragma omp parallel for schedule(static) proc_bind(spread)
     for (int i = 0; i < M; i++) {
-        double sum = 0.0;
-#if defined(SPMV_USE_SIMD)
-        #pragma omp simd reduction(+:sum)
-#endif
-        for (int k = row_ptr[i]; k < row_ptr[i+1]; k++)
-            sum += vals_csr[k] * x[col_idx[k]];
-        y[i] = sum;
+        const int kbeg = row_ptr[i];
+        const int kend = row_ptr[i+1];
+        double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+        int k = kbeg;
+        const int kend4 = kbeg + ((kend - kbeg) & ~3);
+        for (; k < kend4; k += 4) {
+            s0 += vals_csr[k  ] * x[col_idx[k  ]];
+            s1 += vals_csr[k+1] * x[col_idx[k+1]];
+            s2 += vals_csr[k+2] * x[col_idx[k+2]];
+            s3 += vals_csr[k+3] * x[col_idx[k+3]];
+        }
+        for (; k < kend; k++)
+            s0 += vals_csr[k] * x[col_idx[k]];
+        y[i] = (s0 + s1) + (s2 + s3);
     }
 }
 
 int main(int argc, char **argv) {
+    /* Pin OpenMP threads across both sockets before any parallel region
+     * runs. libgomp reads these lazily, so setenv here still takes effect.
+     * The "0" override flag leaves any user-supplied value alone.
+     */
+    setenv("OMP_PROC_BIND", "spread", 0);
+    setenv("OMP_PLACES",    "cores",  0);
+
     if (argc < 2) { fprintf(stderr,"Usage: %s matrix.mtx [vector.txt]\n", argv[0]); return 1; }
     const char *mtx = argv[1]; const char *vec = (argc>2?argv[2]:NULL);
     int M,N,nnz; int *rows=NULL,*cols=NULL; double *vals=NULL;

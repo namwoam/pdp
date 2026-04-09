@@ -1,0 +1,10 @@
+huge_200k_100 6.199
+huge_denserows_5000 0.215
+large_10000_sparse_100 0.226
+large_denserows_2000 0.083
+large_sparse_2000 0.035
+large_sparse_5000 0.043
+test_med_skew_500 0.019
+test_med_uniform_500 0.023
+test_small_uniform_50 0.016
+test_sparse_1000 0.028
