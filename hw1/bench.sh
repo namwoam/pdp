@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 
 BIN=spmv_openmp
 BASE=bench_baseline.txt
-REPS=5
+REPS=10
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-16}  # spec caps at 16/team/node
 
 SAVE=0
