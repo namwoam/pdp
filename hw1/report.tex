@@ -109,9 +109,28 @@ On \texttt{large\_10000\_sparse\_100} (1,000,000 non-zeros), serial CSR needed 1
 
 The scaling behavior is strongly workload-dependent.
 
+Table~\ref{tab:thread-scaling-data} first reports the measured median runtimes (ms) for two representative datasets across thread counts.
+
+\begin{table}[h]
+  \centering
+  \caption{OpenMP thread-scaling data (median runtime in ms).}
+  \label{tab:thread-scaling-data}
+  \begin{tabular}{lrr}
+    \toprule
+    Threads & \texttt{large\_sparse\_5000} & \texttt{huge\_200k\_100} \\
+    \midrule
+    1  & 0.055 & 36.763 \\
+    2  & 0.066 & 33.348 \\
+    4  & 0.035 & 21.076 \\
+    8  & 0.025 & 11.403 \\
+    16 & 0.036 & 5.864 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 \begin{itemize}
-  \item For \texttt{large\_sparse\_5000}, adding threads helps little after a point: 1-thread OpenMP took 0.0550 ms and 16 threads reached 0.0360 ms. The matrix is too small for thread startup, synchronization, and memory traffic to amortize perfectly.
-  \item For \texttt{huge\_200k\_100}, the effect is much stronger: 1-thread OpenMP took 36.76 ms and 16 threads dropped to 5.864 ms.
+  \item For \texttt{large\_sparse\_5000}, the table shows limited net benefit: runtime changes from 0.055 ms (1 thread) to 0.036 ms (16 threads), with non-monotonic behavior at intermediate thread counts. This indicates that overhead and memory effects dominate quickly for this small workload.
+  \item For \texttt{huge\_200k\_100}, the table shows clear scaling: runtime drops from 36.763 ms (1 thread) to 5.864 ms (16 threads), with progressively larger gains as more cores are used.
 \end{itemize}
 
 In other words, more threads help when there is enough nonzero work and memory-level parallelism to keep the cores busy. On small matrices, parallel overhead dominates sooner.
