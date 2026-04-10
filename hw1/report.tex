@@ -11,6 +11,7 @@
 \usepackage{microtype}
 \usepackage{xcolor}
 \usepackage{graphicx}
+\usepackage{subcaption}
 
 \title{Parallel Sparse Matrix-Vector Multiplication Report}
 \author{%
@@ -53,8 +54,6 @@ Table~\ref{tab:complexity-summary} summarizes the complexity trends of the three
 
 \begin{table}[h]
   \centering
-  \caption{Complexity comparison of the three SPMV methods.}
-  \label{tab:complexity-summary}
   \begin{tabular}{ll}
     \toprule
     Method & Asymptotic Time \\
@@ -64,6 +63,8 @@ Table~\ref{tab:complexity-summary} summarizes the complexity trends of the three
     SPMV-OPENMP & $O((R+N)/p + \alpha)$ \\
     \bottomrule
   \end{tabular}
+  \caption{Complexity comparison of the three SPMV methods.}
+  \label{tab:complexity-summary}
 \end{table}
 
 \section{Correctness}
@@ -80,16 +81,19 @@ Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint 
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=0.9\linewidth]{figure/storage_runtime_comparison.png}
-  \caption{Storage runtime comparison}
-  \label{fig:storage-runtime}
-\end{figure}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.9\linewidth]{figure/matrix_storage_footprint.png}
-  \caption{Estimated matrix storage (y-axis in log scale)}
-  \label{fig:storage-footprint}
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figure/storage_runtime_comparison.png}
+    \caption{Storage runtime comparison}
+    \label{fig:storage-runtime}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figure/matrix_storage_footprint.png}
+    \caption{Estimated matrix storage (y-axis in log scale)}
+    \label{fig:storage-footprint}
+  \end{subfigure}
 \end{figure}
 
 \section{How Does Matrix Size Influence Performance?}
@@ -113,8 +117,6 @@ Table~\ref{tab:thread-scaling-data} first reports the measured median runtimes (
 
 \begin{table}[h]
   \centering
-  \caption{OpenMP thread-scaling data (median runtime in ms).}
-  \label{tab:thread-scaling-data}
   \begin{tabular}{lrr}
     \toprule
     Threads & \texttt{large\_sparse\_5000} & \texttt{huge\_200k\_100} \\
@@ -126,6 +128,8 @@ Table~\ref{tab:thread-scaling-data} first reports the measured median runtimes (
     16 & 0.036 & 5.864 \\
     \bottomrule
   \end{tabular}
+  \caption{OpenMP thread-scaling data (median runtime in ms).}
+  \label{tab:thread-scaling-data}
 \end{table}
 
 For \texttt{large\_sparse\_5000}, the table shows limited net benefit: runtime changes from 0.055 ms (1 thread) to 0.036 ms (16 threads), with non-monotonic behavior at intermediate thread counts, indicating that overhead and memory effects dominate quickly for this small workload. In contrast, for \texttt{huge\_200k\_100}, the table shows clear scaling, with runtime dropping from 36.763 ms (1 thread) to 5.864 ms (16 threads) and progressively larger gains as more cores are used.
