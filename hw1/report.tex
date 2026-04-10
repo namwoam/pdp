@@ -38,6 +38,10 @@ The next level, SPMV-SERIAL, applies a compressed sparse row organization before
 
 SPMV-OPENMP extends the CSR methodology to parallel execution with several locality-conscious techniques. The CSR arrays are first-touch initialized in parallel using static work distribution and spread thread binding (\texttt{schedule(static), proc\_bind(spread)}) so each thread's rows land on the local NUMA node. Each row is sorted by column index to improve sequential access into the input vector, and for medium-size vectors a per-thread replica of the input vector eliminates cross-socket reads. The kernel distributes rows with the same static policy (\texttt{schedule(static)}) that matches the first-touch layout, and the inner loop applies SIMD vectorization with a reduction (\texttt{omp simd reduction}) to exploit vector units. Thread placement is configured to bind threads across physical cores (\texttt{OMP\_PROC\_BIND=spread}, \texttt{OMP\_PLACES=cores}).
 
+In addition to the submitted methods, we also prototyped an experimental algorithm named SPMV-CUSTOM\_KERNEL. This variant is outside the assignment submission scope and is documented in Appendix~\ref{sec:custom-kernel}.
+
+
+
 \section{Complexity Analysis of the Three Methods}
 
 Let $R$ be the number of rows, $N$ be the number of nonzeros, and $p$ be the number of OpenMP threads.
@@ -46,9 +50,9 @@ For SPMV-NOT-CSR, each output row is computed by scanning the full sparse entry 
 
 For SPMV-SERIAL, CSR preprocessing organizes entries by row so each nonzero is visited only once during the multiplication phase. The SpMV kernel complexity becomes $O(R + N)$, where the $R$ term corresponds to per-row control work and the $N$ term corresponds to nonzero multiply-accumulate operations.
 
-For SPMV-OPENMP, the same CSR work is distributed across threads. Ignoring overhead, ideal parallel runtime is $O((R + N)/p)$. In practice, synchronization, thread startup, load imbalance across rows, and memory-bandwidth limits add overhead, so observed runtime is better represented as $O((R + N)/p + \alpha)$ with machine-dependent overhead term $\alpha$.
+For SPMV-OPENMP, the same CSR work is distributed across threads. Ignoring overhead, ideal parallel runtime is $O((R + N)/p)$. In practice, synchronization, thread startup, load imbalance across rows, and memory-bandwidth limits add non-constant overhead, so observed runtime is better represented as $O((R + N)/p + \beta(p, R, N))$, where $\beta$ captures parallel overhead and memory effects.
 
-In summary, the three methods move from redundant-work complexity ($O(RN)$), to work-efficient complexity ($O(R+N)$), to parallel work-efficient complexity with overhead ($O((R+N)/p + \alpha)$). This model explains why the largest gains come first from storage-format improvement, then from parallelism on larger workloads.
+In summary, the three methods move from redundant-work complexity ($O(RN)$), to work-efficient complexity ($O(R+N)$), to parallel work-efficient complexity with overhead ($O((R+N)/p + \beta(p, R, N))$). This model explains why the largest gains come first from storage-format improvement, then from parallelism on larger workloads.
 
 Table~\ref{tab:complexity-summary} summarizes the complexity trends of the three methods.
 
@@ -60,7 +64,7 @@ Table~\ref{tab:complexity-summary} summarizes the complexity trends of the three
     \midrule
     SPMV-NOT-CSR & $O(RN)$ \\
     SPMV-SERIAL & $O(R+N)$ \\
-    SPMV-OPENMP & $O((R+N)/p + \alpha)$ \\
+    SPMV-OPENMP & $O((R+N)/p + \beta(p, R, N))$ \\
     \bottomrule
   \end{tabular}
   \caption{Complexity comparison of the three SpMV methods.}
@@ -163,8 +167,8 @@ A true weak-scaling study would increase matrix size proportionally with thread 
 
 Comparing \texttt{large\_sparse\_2000} and \texttt{large\_denserows\_2000} shows why nnz distribution matters: although they have the same row count, the denser matrix has 10x more nonzeros and correspondingly higher kernel time. Finally, the OpenMP version is also not just ``serial CSR plus threads''; its NUMA-aware first-touch and thread-pinning strategy matches the dual-socket machine configuration, which helps maintain effectiveness on larger matrices.
 
-\section*{Appendix: Experimental SELL-C-16 with AVX-512}
-\label{sec:sell}
+\section*{Appendix: SPMV-CUSTOM\_KERNEL (Experimental SELL-C-16 with AVX-512)}
+\label{sec:custom-kernel}
 
 Beyond the submitted CSR implementation, we prototyped a more aggressive kernel that modifies code outside the two student-implementable functions. It converts CSR into a SELL-C-16 (Sliced ELLPACK, chunk size 16) format with two data-compression tricks: column indices are stored as uint16 per-row deltas instead of absolute int32 (possible because sorted columns have small gaps), and the \texttt{x} vector is pre-cast to float32 so the kernel can use a single \texttt{\_mm512\_i32gather\_ps} to fetch 16 values per layer instead of two \texttt{\_mm512\_i32gather\_pd} calls fetching 8 each. Accumulation stays in double precision via \texttt{vcvtps2pd} for correctness. The AVX-512 target is scoped to the SELL kernel only via \texttt{\_\_attribute\_\_((target(...)))} to avoid frequency downclock on small matrices that still use the scalar CSR path.
 
