@@ -48,24 +48,24 @@
 \newif\if@main\@maintrue
 \DeclareOption{main}{
   \@maintrue
-  \newcommand{\@trackname}{\@neuripsordinal\ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear).}
+  \newcommand{\@trackname}{2026 CSIE7210 Parallel and Distributed Programming}
 }
 \newif\if@position\@positionfalse
 \DeclareOption{position}{
   \@positiontrue
-  \newcommand{\@trackname}{\@neuripsordinal\ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear). Position Paper Track.}
+  \newcommand{\@trackname}{2026 CSIE7210 Parallel and Distributed Programming. Position Paper Track.}
 }
 \newif\if@eandd\@eanddfalse
 \DeclareOption{eandd}{
   \@eanddtrue
 \if@neuripsfinal\@anonymousfalse\else\if@preprint\@anonymousfalse\else\@anonymoustrue\fi\fi
-  \newcommand{\@trackname}{\@neuripsordinal\ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear). Track on Evaluations and Datasets.} 
+  \newcommand{\@trackname}{2026 CSIE7210 Parallel and Distributed Programming. Track on Evaluations and Datasets.} 
 }
 \newif\if@creativeai\@creativeaifalse
 \DeclareOption{creativeai}{
   \@creativeaitrue
   \@anonymousfalse
-  \newcommand{\@trackname}{\@neuripsordinal\ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear). Creative AI Track.}
+  \newcommand{\@trackname}{2026 CSIE7210 Parallel and Distributed Programming. Creative AI Track.}
 }
 
 % For anonymous or non-anonymous
@@ -79,11 +79,11 @@
 \DeclareOption{sglblindworkshop}{
   \@workshoptrue
   \@anonymousfalse
-  \newcommand{\@trackname}{\@neuripsordinal\ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear). Workshop: \@workshoptitle.}
+  \newcommand{\@trackname}{2026 CSIE7210 Parallel and Distributed Programming. Workshop: \@workshoptitle.}
 }
 \DeclareOption{dblblindworkshop}{
   \@workshoptrue
-  \newcommand{\@trackname}{\@neuripsordinal\ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear). Workshop: \@workshoptitle.}
+  \newcommand{\@trackname}{2026 CSIE7210 Parallel and Distributed Programming. Workshop: \@workshoptitle.}
 }
 \DeclareOption{nonanonymous}{
   \@anonymousfalse
@@ -393,7 +393,7 @@
     }
   \else
     \newcommand{\@noticestring}{%
-      Submitted to \@neuripsordinal\/ Conference on Neural Information Processing Systems (NeurIPS \@neuripsyear). Do not distribute.%
+      Submitted to 2026 CSIE7210 Parallel and Distributed Programming. Do not distribute.%
     }
 
     % hide the acknowledgements

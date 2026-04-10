@@ -14,9 +14,9 @@
 
 \title{Parallel Sparse Matrix-Vector Multiplication Report}
 \author{%
-  Team 12\\
   An-Che Liang, Guan-Ming Chiu, Pei-Yu Wu\\
-  National Taiwan University \\
+  National Taiwan University\\
+  Team 12\\
 }
 
 \begin{document}
@@ -25,62 +25,76 @@
 
 \section{Environment}
 
-\begin{itemize}
-  \item CPU: Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz
-  \item Topology: 2 sockets, 36 cores/socket, 2 threads/core, 2 NUMA nodes
-\end{itemize}
+This section describes the hardware and software environment used for the experiments.
 
-\subsection{Experiment Settings}
-
-\begin{itemize}
-  \item Thread counts tested for OpenMP: 1, 2, 4, 8, 16
-  \item Each point on the graph is the median of 3 runs.
-  \item Reported times are the times spent running \texttt{spmv\_csr\_openmp} printed by the binaries. They exclude file parsing and CSR construction.
-\end{itemize}
+The experiments were run on an Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz machine with a topology of 2 sockets, 36 cores per socket, 2 threads per core, and 2 NUMA nodes. For OpenMP, the tested thread counts were 1, 2, 4, 8, and 16. Each point on the graph reports the median of 3 runs. The reported times are the \texttt{spmv\_csr\_openmp} execution times printed by the binaries, excluding file parsing and CSR construction.
 
 \section{Implementations and Applied Optimizations}
 
-\subsection{Sequential Baselines}
+The implementation study used three methodological levels. SPMV-NOT-CSR was treated as the reference baseline that evaluates sparse matrix-vector multiplication directly from unspecialized sparse input, so each row repeatedly traverses many irrelevant nonzeros. This baseline is useful for demonstrating correctness and for quantifying the cost of poor data locality and redundant work.
 
-\begin{itemize}
-  \item \texttt{spmv\_not\_csr.c} is the naive baseline: for every row, it scans all non-zeros, so the inner work is proportional to $O(rows * nnz)$.
-  \item \texttt{spmv\_serial.c} build CSR once, then extracts non-zeros of each row from its contiguous CSR slice. This removes the wasted scan in the \texttt{spmv\_not\_csr.c} version, reducing the time complexity of the sparse matrix-vector multiplication kernel down to $O(rows + nnz)$.
-\end{itemize}
+The next level, SPMV-SERIAL, applies a compressed sparse row organization before the compute phase. This changes the kernel from repeated global scans to row-local contiguous access, so each row processes only its own nonzeros. Methodologically, this isolates the effect of storage layout and access pattern improvements while keeping execution single-threaded.
 
-\subsection{OpenMP Parallel CSR Implementation}
+SPMV-OPENMP extends the CSR methodology to parallel execution by distributing rows across threads and preserving locality-aware placement of data. The parallel design emphasizes balanced row-wise work sharing, reduced contention on shared structures, and better memory behavior on a multi-socket NUMA platform. Overall, the optimization path is structured as baseline cost model, layout-aware serial optimization, and then locality-conscious parallel scaling.
 
-\begin{itemize}
-  \item \texttt{spmv\_openmp.c} parallelizes the CSR kernel over rows with \texttt{\#pragma omp for schedule(static)} and adds \texttt{\#pragma omp simd} on the inner dot-product loop.
-  \item The OpenMP version also applies NUMA-aware first-touch on CSR arrays and the output vector, uses \texttt{OMP\_PROC\_BIND=spread} and \texttt{OMP\_PLACES=cores}, and replicates \texttt{x} per thread when the vector is small enough to improve locality.
-\end{itemize}
+\section{Complexity Analysis of the Three Methods}
+
+Let $R$ be the number of rows, $N$ be the number of nonzeros, and $p$ be the number of OpenMP threads.
+
+For SPMV-NOT-CSR, each output row is computed by scanning the full sparse entry list, so the kernel performs approximately $R \times N$ comparisons/visits. Its time complexity is therefore $O(RN)$, which grows quickly even for moderately large matrices.
+
+For SPMV-SERIAL, CSR preprocessing organizes entries by row so each nonzero is visited only once during the multiplication phase. The SpMV kernel complexity becomes $O(R + N)$, where the $R$ term corresponds to per-row control work and the $N$ term corresponds to nonzero multiply-accumulate operations.
+
+For SPMV-OPENMP, the same CSR work is distributed across threads. Ignoring overhead, ideal parallel runtime is $O((R + N)/p)$. In practice, synchronization, thread startup, load imbalance across rows, and memory-bandwidth limits add overhead, so observed runtime is better represented as $O((R + N)/p + \alpha)$ with machine-dependent overhead term $\alpha$.
+
+In summary, the three methods move from redundant-work complexity ($O(RN)$), to work-efficient complexity ($O(R+N)$), to parallel work-efficient complexity with overhead ($O((R+N)/p + \alpha)$). This model explains why the largest gains come first from storage-format improvement, then from parallelism on larger workloads.
+
+Table~\ref{tab:complexity-summary} summarizes the complexity trends of the three methods.
+
+\begin{table}[h]
+  \centering
+  \caption{Complexity comparison of the three SPMV methods.}
+  \label{tab:complexity-summary}
+  \begin{tabular}{ll}
+    \toprule
+    Method & Asymptotic Time \\
+    \midrule
+    SPMV-NOT-CSR & $O(RN)$ \\
+    SPMV-SERIAL & $O(R+N)$ \\
+    SPMV-OPENMP & $O((R+N)/p + \alpha)$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \section{Correctness}
 
-All benchmarked runs reported \texttt{OK} against the provided \texttt{.gold} outputs, so the performance comparisons below are between correct implementations.
+We wrote a custom bash script to validate correctness before collecting timing data. For each dataset, the script runs each binary and checks whether the program output contains \texttt{OK}, which indicates the computed result matches the provided \texttt{.gold} reference used by the checker inside the binaries. All benchmarked runs passed this check, so the performance comparisons below are between correct implementations.
 
 \section{How Does Storage Format Influence Correctness, Memory Usage, and Runtime?}
 
 Correctness did not change across COO and CSR: all versions produced the expected output within the assignment tolerance. The real differences are memory layout and kernel cost.
 
-Figure 1 shows the runtime gap directly. On \texttt{large\_sparse\_2000}, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On \texttt{large\_denserows\_2000}, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the non-zeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
+Figure~\ref{fig:storage-runtime} shows the runtime gap directly. On \texttt{large\_sparse\_2000}, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On \texttt{large\_denserows\_2000}, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the non-zeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
 
-Figure 2 shows the estimated matrix-storage footprint assuming 32-bit indices and 64-bit values. COO uses \texttt{row + col + value} per nonzero, about 16 bytes per entry. CSR uses \texttt{col + value} per nonzero plus one row-pointer array, about 12 bytes per nonzero plus \texttt{4 * (rows + 1)} bytes. For large matrices this is consistently smaller. For example, \texttt{huge\_200k\_100} is about 305.2 MiB in COO versus 229.6 MiB in CSR.
+Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint assuming 32-bit indices and 64-bit values. COO uses \texttt{row + col + value} per nonzero, about 16 bytes per entry. CSR uses \texttt{col + value} per nonzero plus one row-pointer array, about 12 bytes per nonzero plus \texttt{4 * (rows + 1)} bytes. For large matrices this is consistently smaller. For example, \texttt{huge\_200k\_100} is about 305.2 MiB in COO versus 229.6 MiB in CSR.
 
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.9\linewidth]{figure/storage_runtime_comparison.png}
   \caption{Storage runtime comparison}
+  \label{fig:storage-runtime}
 \end{figure}
 
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.9\linewidth]{figure/matrix_storage_footprint.png}
   \caption{Estimated matrix storage}
+  \label{fig:storage-footprint}
 \end{figure}
 
 \section{How Does Matrix Size Influence Performance?}
 
-The dominant trend is that runtime scales with the amount of nonzero work, not just the row count. Figure 3 orders the matrices by \texttt{nnz}, and both CSR implementations follow that growth. Tiny matrices stay below 0.1 ms, the 1M-nnz matrices land around the sub-millisecond to low-millisecond range, and the 20M-nnz \texttt{huge\_200k\_100} case is the clear outlier.
+The dominant trend is that runtime scales with the amount of nonzero work, not just the row count. Figure~\ref{fig:matrix-size-runtime} orders the matrices by \texttt{nnz}, and both CSR implementations follow that growth. Tiny matrices stay below 0.1 ms, the 1M-nnz matrices land around the sub-millisecond to low-millisecond range, and the 20M-nnz \texttt{huge\_200k\_100} case is the clear outlier.
 
 On \texttt{large\_10000\_sparse\_100} (1,000,000 non-zeros), serial CSR needed 1.604 ms. On \texttt{huge\_200k\_100} (20,000,000 non-zeros), serial CSR rose to 38.41 ms. The 20x increase in non-zeros therefore produced roughly a 23.9x increase in kernel time, which is close to the work increase expected for SpMV.
 
@@ -88,6 +102,7 @@ On \texttt{large\_10000\_sparse\_100} (1,000,000 non-zeros), serial CSR needed 1
   \centering
   \includegraphics[width=0.9\linewidth]{figure/matrix_size_runtime.png}
   \caption{Matrix size vs runtime}
+  \label{fig:matrix-size-runtime}
 \end{figure}
 
 \section{How Does the Number of Threads Influence Performance?}
@@ -107,12 +122,13 @@ The best 16-thread speedup in these experiments was on \texttt{large\_10000\_spa
 
 For the largest case, \texttt{huge\_200k\_100}, serial CSR took 38.41 ms and the 16-thread OpenMP kernel took 5.864 ms, which is a 6.55x speedup. On \texttt{large\_10000\_sparse\_100}, the 16-thread speedup was 8.67x.
 
-Figure 4 plots both runtime and speedup versus thread count. The ideal line is included as a reference; the measured curves stay below it because SpMV is memory-bound and the rows do not all carry the same amount of work.
+Figure~\ref{fig:thread-scaling} plots both runtime and speedup versus thread count. The ideal line is included as a reference; the measured curves stay below it because SpMV is memory-bound and the rows do not all carry the same amount of work.
 
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.9\linewidth]{figure/thread_scaling.png}
   \caption{Thread scaling and speedup}
+  \label{fig:thread-scaling}
 \end{figure}
 
 \section{Explain the Observed Scalability: Strong vs. Weak}
@@ -125,18 +141,6 @@ A true weak-scaling study would increase matrix size proportionally with thread 
 
 \section{Additional Insights}
 
-\begin{itemize}
-  \item Comparing \texttt{large\_sparse\_2000} and \texttt{large\_denserows\_2000} shows why nnz distribution matters. They have the same row count, but the denser matrix has 10x more non-zeros and correspondingly higher kernel time.
-  \item The OpenMP version is not just ``serial CSR plus threads''. The NUMA-aware first-touch and thread pinning decisions match the dual-socket machine described in the spec, which is why the parallel code remains effective on the bigger matrices.
-  \item The naive COO-scan baseline is useful for correctness and for demonstrating why CSR matters, but it stops being a practical performance baseline once matrices grow beyond the small and medium cases.
-\end{itemize}
-
-\section{Experiment Data Log}
-
-\begin{itemize}
-  \item Raw benchmark runs: \texttt{report\_raw\_results.csv}
-  \item Summary metrics: \texttt{report\_metrics.json}
-  \item Figure directory: \texttt{figure/}
-\end{itemize}
+Comparing \texttt{large\_sparse\_2000} and \texttt{large\_denserows\_2000} shows why nnz distribution matters: although they have the same row count, the denser matrix has 10x more non-zeros and correspondingly higher kernel time. The OpenMP version is also not just ``serial CSR plus threads''; its NUMA-aware first-touch and thread-pinning strategy matches the dual-socket machine configuration, which helps maintain effectiveness on larger matrices. Finally, the naive COO-scan baseline remains useful for correctness validation and for illustrating why CSR matters, but it is no longer a practical performance baseline once matrix sizes move beyond small and medium cases.
 
 \end{document}
