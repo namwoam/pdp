@@ -1,19 +1,25 @@
 # Parallel Sparse Matrix-Vector Multiplication Report
 
-## Environment and Methodology
+Team 12 梁安哲、邱冠銘、吳沛昀
 
-- Generated at (UTC): 2026-04-09T15:32:26.020756+00:00
-- All benchmark runs passed verification: True
+## Environment 
+
 - CPU: Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz
 - Topology: 2 sockets, 36 cores/socket, 2 threads/core, 2 NUMA nodes
-- Thread counts tested for OpenMP: 1, 2, 4, 8, 16 (matching the assignment cap).
-- Each point is the median of 3 runs.
-- Reported times are the kernel times printed by the binaries. They exclude file parsing and CSR construction, because those steps happen before the timed region in the provided code.
+### Experiment Settings 
+
+- Thread counts tested for OpenMP: 1, 2, 4, 8, 16
+- Each point on the graph is the median of 3 runs.
+- Reported times are the times spent running `spmv_csr_openmp` printed by the binaries. They exclude file parsing and CSR construction.
 
 ## Implementations and Applied Optimizations
 
-- `spmv_not_csr.c` is the naive baseline: for every row it scans all COO triples, so the inner work is proportional to `rows * nnz`.
-- `spmv_serial.c` converts COO to CSR once, then computes each row from its contiguous CSR slice. This removes the wasted full-matrix scan in the naive version.
+### Sequential Baselines 
+
+- `spmv_not_csr.c` is the naive baseline: for every row, it scans all non-zeros, so the inner work is proportional to $O(rows * nnz)$.
+- `spmv_serial.c` build CSR once, then extracts non-zeros of each row from its contiguous CSR slice. This removes the wasted scan in the `spmv_not_csr.c` version, reducing the time complexity of the sparse matrix-vector multiplication kernel down to $O(rows + nnz)$.
+### OpenMP Parallel CSR Implementation
+
 - `spmv_openmp.c` parallelizes the CSR kernel over rows with `#pragma omp for schedule(static)` and adds `#pragma omp simd` on the inner dot-product loop.
 - The OpenMP version also applies NUMA-aware first-touch on CSR arrays and the output vector, uses `OMP_PROC_BIND=spread` and `OMP_PLACES=cores`, and replicates `x` per thread when the vector is small enough to improve locality.
 
@@ -25,7 +31,7 @@ All benchmarked runs reported `OK` against the provided `.gold` outputs, so the 
 
 Correctness did not change across COO and CSR: all versions produced the expected output within the assignment tolerance. The real differences are memory layout and kernel cost.
 
-Figure 1 shows the runtime gap directly. On `large_sparse_2000`, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On `large_denserows_2000`, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the nonzeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
+Figure 1 shows the runtime gap directly. On `large_sparse_2000`, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On `large_denserows_2000`, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the non-zeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
 
 Figure 2 shows the estimated matrix-storage footprint assuming 32-bit indices and 64-bit values. COO uses `row + col + value` per nonzero, about 16 bytes per entry. CSR uses `col + value` per nonzero plus one row-pointer array, about 12 bytes per nonzero plus `4 * (rows + 1)` bytes. For large matrices this is consistently smaller. For example, `huge_200k_100` is about 305.2 MiB in COO versus 229.6 MiB in CSR.
 
@@ -37,13 +43,13 @@ Figure 2 shows the estimated matrix-storage footprint assuming 32-bit indices an
 
 The dominant trend is that runtime scales with the amount of nonzero work, not just the row count. Figure 3 orders the matrices by `nnz`, and both CSR implementations follow that growth. Tiny matrices stay below 0.1 ms, the 1M-nnz matrices land around the sub-millisecond to low-millisecond range, and the 20M-nnz `huge_200k_100` case is the clear outlier.
 
-On `large_10000_sparse_100` (1,000,000 nonzeros), serial CSR needed 1.604 ms. On `huge_200k_100` (20,000,000 nonzeros), serial CSR rose to 38.41 ms. The 20x increase in nonzeros therefore produced roughly a 23.9x increase in kernel time, which is close to the work increase expected for SpMV.
+On `large_10000_sparse_100` (1,000,000 non-zeros), serial CSR needed 1.604 ms. On `huge_200k_100` (20,000,000 non-zeros), serial CSR rose to 38.41 ms. The 20x increase in non-zeros therefore produced roughly a 23.9x increase in kernel time, which is close to the work increase expected for SpMV.
 
 ![Matrix size vs runtime](figure/matrix_size_runtime.png)
 
 ## How Does the Number of Threads Influence Performance?
 
-The scaling behaviour is strongly workload-dependent.
+The scaling behavior is strongly workload-dependent.
 
 - For `large_sparse_5000`, adding threads helps little after a point: 1-thread OpenMP took 0.0550 ms and 16 threads reached 0.0360 ms. The matrix is too small for thread startup, synchronization, and memory traffic to amortize perfectly.
 - For `huge_200k_100`, the effect is much stronger: 1-thread OpenMP took 36.76 ms and 16 threads dropped to 5.864 ms.
@@ -70,13 +76,11 @@ A true weak-scaling study would increase matrix size proportionally with thread 
 
 ## Additional Insights
 
-- Comparing `large_sparse_2000` and `large_denserows_2000` shows why nnz distribution matters. They have the same row count, but the denser matrix has 10x more nonzeros and correspondingly higher kernel time.
+- Comparing `large_sparse_2000` and `large_denserows_2000` shows why nnz distribution matters. They have the same row count, but the denser matrix has 10x more non-zeros and correspondingly higher kernel time.
 - The OpenMP version is not just 'serial CSR plus threads'. The NUMA-aware first-touch and thread pinning decisions match the dual-socket machine described in the spec, which is why the parallel code remains effective on the bigger matrices.
 - The naive COO-scan baseline is useful for correctness and for demonstrating why CSR matters, but it stops being a practical performance baseline once matrices grow beyond the small and medium cases.
 
-## Reproducibility Artifacts
-
+## Experiment Data Log
 - Raw benchmark runs: `report_raw_results.csv`
 - Summary metrics: `report_metrics.json`
 - Figure directory: `figure/`
-- Generator script: `generate_report.py`
