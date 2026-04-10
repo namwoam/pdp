@@ -76,7 +76,7 @@ Correctness did not change across COO and CSR: all versions produced the expecte
 
 Figure~\ref{fig:storage-runtime} shows the runtime gap directly. On \texttt{large\_sparse\_2000}, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On \texttt{large\_denserows\_2000}, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the non-zeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
 
-Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint assuming 32-bit indices and 64-bit values. COO uses \texttt{row + col + value} per nonzero, about 16 bytes per entry. CSR uses \texttt{col + value} per nonzero plus one row-pointer array, about 12 bytes per nonzero plus \texttt{4 * (rows + 1)} bytes. For large matrices this is consistently smaller. For example, \texttt{huge\_200k\_100} is about 305.2 MiB in COO versus 229.6 MiB in CSR.
+Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint assuming 32-bit indices and 64-bit values; the y-axis is plotted in log scale so both small and large testcases are visible. Let $N$ be the number of nonzeros and $R$ be the number of rows. In COO, each nonzero stores a row index, a column index, and a value, so the footprint is approximately $N(4+4+8)=16N$ bytes. In CSR, each nonzero stores one column index and one value, plus a row-pointer array, so the footprint is approximately $N(4+8)+4(R+1)=12N+4(R+1)$ bytes. For large matrices this is consistently smaller. For example, huge\_200k\_100 is about 305.2 MiB in COO versus 229.6 MiB in CSR.
 
 \begin{figure}[h]
   \centering
@@ -88,7 +88,7 @@ Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint 
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.9\linewidth]{figure/matrix_storage_footprint.png}
-  \caption{Estimated matrix storage}
+  \caption{Estimated matrix storage (y-axis in log scale)}
   \label{fig:storage-footprint}
 \end{figure}
 
@@ -128,10 +128,7 @@ Table~\ref{tab:thread-scaling-data} first reports the measured median runtimes (
   \end{tabular}
 \end{table}
 
-\begin{itemize}
-  \item For \texttt{large\_sparse\_5000}, the table shows limited net benefit: runtime changes from 0.055 ms (1 thread) to 0.036 ms (16 threads), with non-monotonic behavior at intermediate thread counts. This indicates that overhead and memory effects dominate quickly for this small workload.
-  \item For \texttt{huge\_200k\_100}, the table shows clear scaling: runtime drops from 36.763 ms (1 thread) to 5.864 ms (16 threads), with progressively larger gains as more cores are used.
-\end{itemize}
+For \texttt{large\_sparse\_5000}, the table shows limited net benefit: runtime changes from 0.055 ms (1 thread) to 0.036 ms (16 threads), with non-monotonic behavior at intermediate thread counts, indicating that overhead and memory effects dominate quickly for this small workload. In contrast, for \texttt{huge\_200k\_100}, the table shows clear scaling, with runtime dropping from 36.763 ms (1 thread) to 5.864 ms (16 threads) and progressively larger gains as more cores are used.
 
 In other words, more threads help when there is enough nonzero work and memory-level parallelism to keep the cores busy. On small matrices, parallel overhead dominates sooner.
 

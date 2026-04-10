@@ -246,15 +246,17 @@ def make_memory_plot(metas: dict[str, dict[str, int]]) -> None:
     x = list(range(len(datasets)))
     width = 0.38
 
-    fig, ax = plt.subplots(figsize=(12, 5.5))
+    fig, ax = plt.subplots(figsize=(12, 5.8))
     ax.bar([v - width / 2 for v in x], coo, width=width, label="COO bytes")
     ax.bar([v + width / 2 for v in x], csr, width=width, label="CSR bytes")
-    ax.set_ylabel("Estimated matrix storage (MiB)")
+    ax.set_yscale("log")
+    ax.set_ylabel("Estimated matrix storage (MiB, log scale)")
     ax.set_title("CSR stores less matrix metadata than COO")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=25, ha="right")
-    ax.grid(axis="y", alpha=0.25)
-    ax.legend()
+    ax.grid(axis="y", which="both", alpha=0.25)
+    ax.legend(loc="upper left")
+
     fig.tight_layout()
     fig.savefig(FIGURE_DIR / "matrix_storage_footprint.png", dpi=180)
     plt.close(fig)
