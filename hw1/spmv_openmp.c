@@ -1,5 +1,16 @@
 /* Student stub: spmv_openmp.c
  * Keeps IO, timing, verification. Students implement CSR conversion and OpenMP SpMV.
+ *
+ * Two kernels are shipped here:
+ *   1. CSR baseline with sorted col_idx + parallel NUMA first-touch.
+ *   2. SELL-C-16 (sliced ELLPACK, sigma=1, chunk size 16) using AVX-512
+ *      intrinsics. All shipped testcases have constant per-row nnz inside
+ *      each matrix, which gives SELL-C-16 zero padding waste and lets us
+ *      wide-vectorize 16 row sums in parallel.
+ *
+ * The AVX-512 kernel is scoped to one function via __attribute__((target))
+ * so the rest of the file stays at plain -O3 (no core downclock for the
+ * small testcases). Dispatch happens at runtime based on padding ratio.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,9 +18,12 @@
 #include <time.h>
 #include <math.h>
 #include <stdint.h>
+#include <immintrin.h>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+
+#define SELL_C 16
 
 static double time_ms(void) {
     struct timespec t;
@@ -146,6 +160,25 @@ static void prepare_output(int M, double *y) {
     for (int i = 0; i < M; i++) y[i] = 0.0;
 }
 
+/* Relocate x into a fresh buffer that is first-touched in parallel, so the
+ * pages are split between both sockets instead of sitting entirely on socket
+ * 0 (where read_vec ran). For huge_200k_100 this halves the cross-UPI read
+ * cost during SpMV. Caller must free the returned buffer; original `*x` is
+ * freed in-place.
+ */
+static double *numa_spread_x(int N, double **x_io) {
+    if (N <= 0) return *x_io;
+    double *src = *x_io;
+    double *dst = NULL;
+    if (posix_memalign((void**)&dst, 64, sizeof(double) * (size_t)N) != 0 || !dst)
+        return src;
+    #pragma omp parallel for schedule(static) proc_bind(spread)
+    for (int i = 0; i < N; i++) dst[i] = src[i];
+    free(src);
+    *x_io = dst;
+    return dst;
+}
+
 /* SpMV: static schedule matches the NUMA first-touch done in build_csr.
  * restrict lets the compiler assume no aliasing between arrays.
  */
@@ -177,6 +210,226 @@ void spmv_csr_openmp(int M,
     }
 }
 
+/* SELL-C-sigma (sigma=1, C=16) format.
+ *
+ * Layout: rows are grouped into chunks of C=16 consecutive rows. Each chunk
+ * has its own independent `len` (the max row nnz in that chunk). Inside a
+ * chunk, values are stored column-major: vals[k*C + i] is the k-th nonzero
+ * of row (chunk_base + i). Missing entries are padded with col 0, val 0.0
+ * so the SIMD kernel can run without masks. Zero vals contribute nothing,
+ * so padding does not affect correctness.
+ *
+ * This representation lets the kernel process 16 row sums in parallel with
+ * AVX-512: contiguous loads of col_idx/vals, one vgather to fetch 16 x
+ * elements, one vfmadd per step. No scalar fallback on the hot path.
+ */
+typedef struct {
+    int      nchunks;
+    int     *chunk_ptr;   /* size nchunks+1, offset into vals/col arrays   */
+    int     *chunk_len;   /* size nchunks, per-chunk nnz height            */
+    int     *col_idx;     /* column-major storage, 64B aligned             */
+    double  *vals;        /* column-major storage, 64B aligned             */
+    size_t   total;       /* total padded entries                          */
+    int      padded_M;    /* nchunks * C, for y allocation                 */
+} SellC;
+
+static int build_sell_c(int M,
+                        const int *row_ptr,
+                        const int *csr_col_idx,
+                        const double *csr_vals,
+                        SellC *out) {
+    const int C = SELL_C;
+    int nchunks = (M + C - 1) / C;
+    out->nchunks  = nchunks;
+    out->padded_M = nchunks * C;
+    out->chunk_ptr = (int*)malloc((size_t)(nchunks + 1) * sizeof(int));
+    out->chunk_len = (int*)malloc((size_t)nchunks * sizeof(int));
+    if (!out->chunk_ptr || !out->chunk_len) return -1;
+
+    size_t total = 0;
+    out->chunk_ptr[0] = 0;
+    for (int c = 0; c < nchunks; c++) {
+        int r0 = c * C;
+        int maxlen = 0;
+        for (int i = 0; i < C; i++) {
+            int r = r0 + i;
+            int rl = (r < M) ? (row_ptr[r+1] - row_ptr[r]) : 0;
+            if (rl > maxlen) maxlen = rl;
+        }
+        out->chunk_len[c] = maxlen;
+        total += (size_t)maxlen * (size_t)C;
+        if (total > (size_t)INT32_MAX) return -1;
+        out->chunk_ptr[c+1] = (int)total;
+    }
+    out->total = total;
+
+    if (posix_memalign((void**)&out->col_idx, 64, total * sizeof(int))    != 0) return -1;
+    if (posix_memalign((void**)&out->vals,    64, total * sizeof(double)) != 0) return -1;
+
+    /* Parallel first-touch so chunk pages live on the NUMA node of the
+     * thread that will later execute that chunk (schedule(static) below).
+     */
+    #pragma omp parallel for schedule(static) proc_bind(spread)
+    for (int c = 0; c < nchunks; c++) {
+        int beg = out->chunk_ptr[c];
+        int end = out->chunk_ptr[c+1];
+        for (int k = beg; k < end; k++) {
+            out->col_idx[k] = 0;
+            out->vals[k]    = 0.0;
+        }
+    }
+
+    /* Fill: copy from CSR into chunk-local column-major slots. The source
+     * rows are already col-sorted by build_csr, so SELL inherits that too.
+     */
+    #pragma omp parallel for schedule(static) proc_bind(spread)
+    for (int c = 0; c < nchunks; c++) {
+        int r0  = c * C;
+        int ptr = out->chunk_ptr[c];
+        int clen = out->chunk_len[c];
+        int *ci_dst = out->col_idx + ptr;
+        double *vv_dst = out->vals + ptr;
+        for (int i = 0; i < C; i++) {
+            int r = r0 + i;
+            if (r >= M) break;
+            int rs = row_ptr[r];
+            int rl = row_ptr[r+1] - rs;
+            for (int k = 0; k < rl; k++) {
+                ci_dst[k * C + i] = csr_col_idx[rs + k];
+                vv_dst[k * C + i] = csr_vals[rs + k];
+            }
+            /* k in [rl, clen) already zeroed by the first-touch pass. */
+            (void)clen;
+        }
+    }
+    return 0;
+}
+
+static void free_sell_c(SellC *s) {
+    if (!s) return;
+    free(s->chunk_ptr);
+    free(s->chunk_len);
+    free(s->col_idx);
+    free(s->vals);
+    s->chunk_ptr = NULL; s->chunk_len = NULL; s->col_idx = NULL; s->vals = NULL;
+}
+
+/* AVX-512 SELL-C-16 kernel. Scoped target attribute so only this function
+ * emits AVX-512; the rest of the translation unit stays at baseline ISA to
+ * avoid AVX-512 downclock affecting small testcases that use the CSR path.
+ *
+ * Each iteration processes one "layer" (16 nnz across 16 rows):
+ *   - two aligned loads of 8 col indices each
+ *   - two vgather_pd to fetch 16 x elements
+ *   - two aligned loads of 8 vals each
+ *   - two vfmadd into running sum registers
+ * After `clen` layers, store 16 row sums. The tail rows in the last chunk
+ * are padded with col 0 / val 0.0 so the store is always 16-wide safe into
+ * a y buffer allocated with `padded_M` slots.
+ */
+__attribute__((target("avx512f,avx512dq,fma,bmi2")))
+static void spmv_sell_c16(const SellC *s,
+                          const double * restrict x_shared,
+                          const double * restrict x_local,
+                          int x_stride,
+                          double       * restrict y) {
+    const int nchunks = s->nchunks;
+    const int *chunk_ptr = s->chunk_ptr;
+    const int *chunk_len = s->chunk_len;
+    const int *col_all   = s->col_idx;
+    const double *val_all = s->vals;
+
+    #pragma omp parallel proc_bind(spread)
+    {
+        const double * restrict x = x_shared;
+#ifdef _OPENMP
+        if (x_local) x = x_local + (size_t)omp_get_thread_num() * (size_t)x_stride;
+#endif
+    #pragma omp for schedule(static)
+    for (int c = 0; c < nchunks; c++) {
+        const int ptr  = chunk_ptr[c];
+        const int clen = chunk_len[c];
+        const int *ci  = col_all + ptr;
+        const double *vv = val_all + ptr;
+
+        /* Eight independent accumulators (4 layers unrolled × 2 halves)
+         * to break the fmadd dependency chain. Ice Lake has a single
+         * gather port but the scheduler can still overlap gather latency
+         * with FMAs of the previous layer, so deeper unroll yields ILP.
+         */
+        __m512d sl0 = _mm512_setzero_pd(), sh0 = _mm512_setzero_pd();
+        __m512d sl1 = _mm512_setzero_pd(), sh1 = _mm512_setzero_pd();
+        __m512d sl2 = _mm512_setzero_pd(), sh2 = _mm512_setzero_pd();
+        __m512d sl3 = _mm512_setzero_pd(), sh3 = _mm512_setzero_pd();
+
+        int k = 0;
+        const int prefetch_layers = 8; /* layers ahead */
+        for (; k + 3 < clen; k += 4) {
+            if (k + prefetch_layers < clen) {
+                const int *pci = ci + (size_t)(k + prefetch_layers) * SELL_C;
+                const double *pvv = vv + (size_t)(k + prefetch_layers) * SELL_C;
+                _mm_prefetch((const char*)pci,        _MM_HINT_T0);
+                _mm_prefetch((const char*)(pci + 8),  _MM_HINT_T0);
+                _mm_prefetch((const char*)pvv,        _MM_HINT_T0);
+                _mm_prefetch((const char*)(pvv + 8),  _MM_HINT_T0);
+            }
+            const int *c0 = ci + (size_t)(k + 0) * SELL_C;
+            const int *c1 = ci + (size_t)(k + 1) * SELL_C;
+            const int *c2 = ci + (size_t)(k + 2) * SELL_C;
+            const int *c3 = ci + (size_t)(k + 3) * SELL_C;
+            const double *v0 = vv + (size_t)(k + 0) * SELL_C;
+            const double *v1 = vv + (size_t)(k + 1) * SELL_C;
+            const double *v2 = vv + (size_t)(k + 2) * SELL_C;
+            const double *v3 = vv + (size_t)(k + 3) * SELL_C;
+
+            __m256i i0l = _mm256_load_si256((const __m256i*)(c0));
+            __m256i i0h = _mm256_load_si256((const __m256i*)(c0 + 8));
+            __m256i i1l = _mm256_load_si256((const __m256i*)(c1));
+            __m256i i1h = _mm256_load_si256((const __m256i*)(c1 + 8));
+            __m256i i2l = _mm256_load_si256((const __m256i*)(c2));
+            __m256i i2h = _mm256_load_si256((const __m256i*)(c2 + 8));
+            __m256i i3l = _mm256_load_si256((const __m256i*)(c3));
+            __m256i i3h = _mm256_load_si256((const __m256i*)(c3 + 8));
+
+            __m512d x0l = _mm512_i32gather_pd(i0l, x, 8);
+            __m512d x0h = _mm512_i32gather_pd(i0h, x, 8);
+            __m512d x1l = _mm512_i32gather_pd(i1l, x, 8);
+            __m512d x1h = _mm512_i32gather_pd(i1h, x, 8);
+            __m512d x2l = _mm512_i32gather_pd(i2l, x, 8);
+            __m512d x2h = _mm512_i32gather_pd(i2h, x, 8);
+            __m512d x3l = _mm512_i32gather_pd(i3l, x, 8);
+            __m512d x3h = _mm512_i32gather_pd(i3h, x, 8);
+
+            sl0 = _mm512_fmadd_pd(_mm512_load_pd(v0    ), x0l, sl0);
+            sh0 = _mm512_fmadd_pd(_mm512_load_pd(v0 + 8), x0h, sh0);
+            sl1 = _mm512_fmadd_pd(_mm512_load_pd(v1    ), x1l, sl1);
+            sh1 = _mm512_fmadd_pd(_mm512_load_pd(v1 + 8), x1h, sh1);
+            sl2 = _mm512_fmadd_pd(_mm512_load_pd(v2    ), x2l, sl2);
+            sh2 = _mm512_fmadd_pd(_mm512_load_pd(v2 + 8), x2h, sh2);
+            sl3 = _mm512_fmadd_pd(_mm512_load_pd(v3    ), x3l, sl3);
+            sh3 = _mm512_fmadd_pd(_mm512_load_pd(v3 + 8), x3h, sh3);
+        }
+        for (; k < clen; k++) {
+            const int *ck = ci + (size_t)k * SELL_C;
+            const double *vk = vv + (size_t)k * SELL_C;
+            __m256i il = _mm256_load_si256((const __m256i*)(ck));
+            __m256i ih = _mm256_load_si256((const __m256i*)(ck + 8));
+            __m512d xl = _mm512_i32gather_pd(il, x, 8);
+            __m512d xh = _mm512_i32gather_pd(ih, x, 8);
+            sl0 = _mm512_fmadd_pd(_mm512_load_pd(vk    ), xl, sl0);
+            sh0 = _mm512_fmadd_pd(_mm512_load_pd(vk + 8), xh, sh0);
+        }
+
+        __m512d sum_lo = _mm512_add_pd(_mm512_add_pd(sl0, sl1), _mm512_add_pd(sl2, sl3));
+        __m512d sum_hi = _mm512_add_pd(_mm512_add_pd(sh0, sh1), _mm512_add_pd(sh2, sh3));
+
+        double *yb = y + (size_t)c * SELL_C;
+        _mm512_store_pd(yb,     sum_lo);
+        _mm512_store_pd(yb + 8, sum_hi);
+    }
+    } /* end parallel */
+}
+
 int main(int argc, char **argv) {
     /* Pin OpenMP threads across both sockets before any parallel region
      * runs. libgomp reads these lazily, so setenv here still takes effect.
@@ -190,24 +443,62 @@ int main(int argc, char **argv) {
     int M,N,nnz; int *rows=NULL,*cols=NULL; double *vals=NULL;
     if (read_mtx(mtx,&M,&N,&nnz,&rows,&cols,&vals)!=0) { fprintf(stderr,"Failed to read mtx\n"); return 1; }
     double *x=NULL; read_vec(vec,N,&x);
+    numa_spread_x(N, &x);
     int x_stride = N;
     double *x_local = build_thread_local_x(N, x, &x_stride);
 
     int *row_ptr=NULL,*col_idx=NULL; double *vals_csr=NULL;
     build_csr(M,N,nnz,rows,cols,vals,&row_ptr,&col_idx,&vals_csr);
 
-    double *y = malloc(sizeof(double)*M);
-    prepare_output(M, y);
+    /* Decide SELL-C-16 vs CSR based on padding waste. Build SELL eagerly
+     * (cost is outside the timed region) and inspect its total footprint.
+     * If padding bloat is small enough and the workload is large enough
+     * to amortise kernel startup, take the AVX-512 SELL path; otherwise
+     * stay on the tuned scalar CSR path.
+     */
+    /* Dispatch rule: SELL-C-16 only wins when (a) x is large enough that
+     * the per-core L1 cannot hold it (so scalar gather pays L2+ latency
+     * and the vgather amortises the load), and (b) there is enough nnz
+     * to pay back the extra parallel region. On our probes, huge_200k_100
+     * is the only case that hits both; the dense/small cases stay on the
+     * tuned scalar CSR kernel.
+     */
+    SellC sell = {0};
+    int use_sell = 0;
+    if (M >= 4096 && N >= 65536 && nnz >= 5000000) {
+        if (build_sell_c(M, row_ptr, col_idx, vals_csr, &sell) == 0) {
+            double pad_ratio = (double)sell.total / (double)(nnz > 0 ? nnz : 1);
+            if (pad_ratio <= 1.10) use_sell = 1;
+            else free_sell_c(&sell);
+        }
+    }
+
+    const int y_slots = use_sell ? sell.padded_M : M;
+    double *y = NULL;
+    if (posix_memalign((void**)&y, 64, (size_t)y_slots * sizeof(double)) != 0 || !y) {
+        fprintf(stderr, "posix_memalign(y) failed\n"); return 1;
+    }
+    /* First-touch the full padded y range so the last tail store in the
+     * SELL kernel does not fault inside the timed region.
+     */
+    #pragma omp parallel for schedule(static) proc_bind(spread)
+    for (int i = 0; i < y_slots; i++) y[i] = 0.0;
+
     double t0 = time_ms();
-    spmv_csr_openmp(M,row_ptr,col_idx,vals_csr,x,x_local,x_stride,y);
+    if (use_sell) {
+        spmv_sell_c16(&sell, x, x_local, x_stride, y);
+    } else {
+        spmv_csr_openmp(M,row_ptr,col_idx,vals_csr,x,x_local,x_stride,y);
+    }
     double t1 = time_ms();
-    fprintf(stderr,"spmv_openmp_time_ms=%.3f\n", t1-t0);
+    fprintf(stderr,"spmv_openmp_time_ms=%.3f (kernel=%s)\n", t1-t0, use_sell?"sell":"csr");
 
     char goldpath[1024]; snprintf(goldpath,sizeof(goldpath),"%s.gold", mtx);
     double *ygold=NULL; if (read_gold(goldpath,M,&ygold)==0) {
         if (verify(M,y,ygold)) fprintf(stderr,"OK\n"); else fprintf(stderr,"WRONG\n"); free(ygold);
     } else fprintf(stderr,"No gold found (%s) — skipping verify\n", goldpath);
 
+    if (use_sell) free_sell_c(&sell);
     free(rows); free(cols); free(vals); free(row_ptr); free(col_idx); free(vals_csr); free(x); free(x_local); free(y);
     return 0;
 }
