@@ -36,7 +36,7 @@ The implementation study used three methodological levels. SPMV-NOT-CSR was trea
 
 The next level, SPMV-SERIAL, applies a compressed sparse row organization before the compute phase. This changes the kernel from repeated global scans to row-local contiguous access, so each row processes only its own nonzeros. Methodologically, this isolates the effect of storage layout and access pattern improvements while keeping execution single-threaded.
 
-SPMV-OPENMP extends the CSR methodology to parallel execution by distributing rows across threads and preserving locality-aware placement of data. The parallel design emphasizes balanced row-wise work sharing, reduced contention on shared structures, and better memory behavior on a multi-socket NUMA platform. Overall, the optimization path is structured as baseline cost model, layout-aware serial optimization, and then locality-conscious parallel scaling.
+SPMV-OPENMP extends the CSR methodology to parallel execution with several locality-conscious techniques. The CSR arrays are first-touch initialized in parallel (\texttt{schedule(static), proc\_bind(spread)}) so each thread's rows land on the local NUMA node. Each row is sorted by column index to improve sequential access into \texttt{x}, and for medium-size vectors a per-thread replica of \texttt{x} eliminates cross-socket reads. The kernel distributes rows with the same \texttt{schedule(static)} that matches the first-touch layout, and the inner loop uses \texttt{omp simd reduction} to exploit vector units. Thread placement defaults to \texttt{OMP\_PROC\_BIND=spread} and \texttt{OMP\_PLACES=cores}. Overall, the optimization path is structured as baseline cost model, layout-aware serial optimization, and then locality-conscious parallel scaling.
 
 \section{Complexity Analysis of the Three Methods}
 
@@ -157,7 +157,7 @@ These experiments primarily measure strong scaling, not weak scaling. For each m
 
 The results show moderate strong scaling on the larger matrices and weak strong scaling on the smaller ones. This is expected for SpMV because the kernel has low arithmetic intensity and quickly becomes limited by memory bandwidth, NUMA traffic, and synchronization overhead. The OpenMP implementation improves strong scaling by preserving locality: static row partitioning aligns with the first-touch initialization, thread pinning spreads threads across cores, and the optional thread-local copy of \texttt{x} reduces shared-vector contention for medium-size inputs.
 
-A true weak-scaling study would increase matrix size proportionally with thread count so that each thread keeps roughly constant work. That was not the experiment required by the assignment questions here, so I describe the observed behavior as strong scaling.
+A true weak-scaling study would increase matrix size proportionally with thread count so that each thread keeps roughly constant work. That was not the experiment required by the assignment questions here, so we describe the observed behavior as strong scaling.
 
 \section{Additional Insights}
 
