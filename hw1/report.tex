@@ -155,7 +155,7 @@ Figure~\ref{fig:thread-scaling} plots both runtime and speedup versus thread cou
 
 Our experiments primarily measure strong scaling, not weak scaling. For each matrix, the problem size stays fixed while the thread count changes from 1 to 16. The plots therefore answer: how much faster does the same SpMV get when more threads are applied?
 
-The results show moderate strong scaling on the larger matrices and weak strong scaling on the smaller ones. This is expected for SpMV because the kernel has low arithmetic intensity and quickly becomes limited by memory bandwidth, NUMA traffic, and synchronization overhead. The OpenMP implementation improves strong scaling by preserving locality: static row partitioning aligns with the first-touch initialization, thread pinning spreads threads across cores, and the optional thread-local copy of \texttt{x} reduces shared-vector contention for medium-size inputs.
+The results show moderate strong scaling on the larger matrices and weak strong scaling on the smaller ones. This is expected for SpMV because the kernel has low arithmetic intensity and quickly becomes limited by memory bandwidth, NUMA traffic, and synchronization overhead. The OpenMP implementation improves strong scaling by preserving locality: static row partitioning aligns with the first-touch initialization, thread pinning spreads threads across cores, and the optional thread-local copy of the input vector reduces shared-vector contention for medium-size inputs.
 
 A true weak-scaling study would increase matrix size proportionally with thread count so that each thread keeps roughly constant work. That was not the experiment required by the assignment questions here, so we describe the observed behavior as strong scaling.
 
