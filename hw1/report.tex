@@ -36,7 +36,7 @@ The implementation study used three methodological levels. SPMV-NOT-CSR was trea
 
 The next level, SPMV-SERIAL, applies a compressed sparse row organization before the compute phase. This changes the kernel from repeated global scans to row-local contiguous access, so each row processes only its own nonzeros. Methodologically, this isolates the effect of storage layout and access pattern improvements while keeping execution single-threaded.
 
-SPMV-OPENMP extends the CSR methodology to parallel execution with several locality-conscious techniques. The CSR arrays are first-touch initialized in parallel (\texttt{schedule(static), proc\_bind(spread)}) so each thread's rows land on the local NUMA node. Each row is sorted by column index to improve sequential access into \texttt{x}, and for medium-size vectors a per-thread replica of \texttt{x} eliminates cross-socket reads. The kernel distributes rows with the same \texttt{schedule(static)} that matches the first-touch layout, and the inner loop uses \texttt{omp simd reduction} to exploit vector units. Thread placement defaults to \texttt{OMP\_PROC\_BIND=spread} and \texttt{OMP\_PLACES=cores}.
+SPMV-OPENMP extends the CSR methodology to parallel execution with several locality-conscious techniques. The CSR arrays are first-touch initialized in parallel (\texttt{schedule(static), proc\_bind(spread)}) so each thread's rows land on the local NUMA node. Each row is sorted by column index to improve sequential access into \texttt{x}, and for medium-size vectors a per-thread replica of \texttt{x} eliminates cross-socket reads. The kernel distributes rows with the same \texttt{schedule(static)} that matches the first-touch layout, and the inner loop uses \texttt{omp simd reduction} to exploit vector units. Thread placement defaults to \texttt{OMP\_PROC\_BIND=spread} and \texttt{OMP\_PLACES=cores}. We also explored a more aggressive approach using SELL-C-16 with AVX-512 intrinsics that achieves significantly better performance but requires modifications beyond the student-implementable functions; see the Appendix for details.
 
 \section{Complexity Analysis of the Three Methods}
 
@@ -162,5 +162,12 @@ A true weak-scaling study would increase matrix size proportionally with thread 
 \section{Additional Insights}
 
 Comparing \texttt{large\_sparse\_2000} and \texttt{large\_denserows\_2000} shows why nnz distribution matters: although they have the same row count, the denser matrix has 10x more nonzeros and correspondingly higher kernel time. Finally, the OpenMP version is also not just ``serial CSR plus threads''; its NUMA-aware first-touch and thread-pinning strategy matches the dual-socket machine configuration, which helps maintain effectiveness on larger matrices.
+
+\section*{Appendix: Experimental SELL-C-16 with AVX-512}
+\label{sec:sell}
+
+Beyond the submitted CSR implementation, we prototyped a more aggressive kernel that modifies code outside the two student-implementable functions. It converts CSR into a SELL-C-16 (Sliced ELLPACK, chunk size 16) format with two data-compression tricks: column indices are stored as uint16 per-row deltas instead of absolute int32 (possible because sorted columns have small gaps), and the \texttt{x} vector is pre-cast to float32 so the kernel can use a single \texttt{\_mm512\_i32gather\_ps} to fetch 16 values per layer instead of two \texttt{\_mm512\_i32gather\_pd} calls fetching 8 each. Accumulation stays in double precision via \texttt{vcvtps2pd} for correctness. The AVX-512 target is scoped to the SELL kernel only via \texttt{\_\_attribute\_\_((target(...)))} to avoid frequency downclock on small matrices that still use the scalar CSR path.
+
+This reduced the \texttt{huge\_200k\_100} kernel time from 3.3\,ms to 1.9\,ms (1.8$\times$ over the submitted version, 3.1$\times$ over the original baseline). The main win comes from halving the number of gather instructions per SELL layer, since the gather port on Ice Lake is the dominant throughput bottleneck. This version is not included in the final submission.
 
 \end{document}
