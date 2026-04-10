@@ -73,6 +73,27 @@ void build_csr(int M, int N, int nnz, int *rows, int *cols, double *vals,
     }
     free(tmp);
 
+    /* Sort each row by column index (insertion sort, parallel across rows).
+     * Done outside the timed region. Ascending col_idx lets the HW prefetcher
+     * see monotonic x[col_idx[k]] accesses and reduces random-gather misses.
+     */
+    #pragma omp parallel for schedule(dynamic, 64) proc_bind(spread)
+    for (int i = 0; i < M; i++) {
+        int lo = row_ptr[i], hi = row_ptr[i+1];
+        for (int a = lo + 1; a < hi; a++) {
+            int    ck = col_idx[a];
+            double vk = vals_csr[a];
+            int b = a - 1;
+            while (b >= lo && col_idx[b] > ck) {
+                col_idx[b+1]  = col_idx[b];
+                vals_csr[b+1] = vals_csr[b];
+                b--;
+            }
+            col_idx[b+1]  = ck;
+            vals_csr[b+1] = vk;
+        }
+    }
+
     *row_ptr_out  = row_ptr;
     *col_idx_out  = col_idx;
     *vals_csr_out = vals_csr;
