@@ -56,3 +56,8 @@ dkms.conf
 
 
 # ignore executable files
+
+
+# latex intermediate files
+*.aux
+*.log

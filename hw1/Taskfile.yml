@@ -34,3 +34,8 @@ tasks:
     - ./spmv_serial ./testcases/test_small_uniform_50.mtx ./testcases/test_small_uniform_50.vec
     - OMP_NUM_THREADS=16 ./spmv_openmp ./testcases/test_small_uniform_50.mtx ./testcases/test_small_uniform_50.vec
     desc: "Run the OpenMP application on the test_small dataset"
+  compile-report:
+    cmds:
+    - /Library/TeX/texbin/xelatex -interaction=nonstopmode -halt-on-error -file-line-error report.tex
+    - /Library/TeX/texbin/xelatex -interaction=nonstopmode -halt-on-error -file-line-error report.tex
+    desc: "Compile report.tex to report.pdf with MacTeX"
