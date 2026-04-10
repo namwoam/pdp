@@ -63,7 +63,7 @@ Table~\ref{tab:complexity-summary} summarizes the complexity trends of the three
     SPMV-OPENMP & $O((R+N)/p + \alpha)$ \\
     \bottomrule
   \end{tabular}
-  \caption{Complexity comparison of the three SPMV methods.}
+  \caption{Complexity comparison of the three SpMV methods.}
   \label{tab:complexity-summary}
 \end{table}
 
@@ -75,7 +75,7 @@ We wrote a custom bash script to validate correctness before collecting timing d
 
 Correctness did not change across COO and CSR: all versions produced the expected output within the assignment tolerance. The real differences are memory layout and kernel cost.
 
-Figure~\ref{fig:storage-runtime} shows the runtime gap directly. On \texttt{large\_sparse\_2000}, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On \texttt{large\_denserows\_2000}, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the non-zeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
+Figure~\ref{fig:storage-runtime} shows the runtime gap directly. On \texttt{large\_sparse\_2000}, the naive COO scan took 43.31 ms while serial CSR took 0.0220 ms, a 1968.5x reduction. On \texttt{large\_denserows\_2000}, naive COO still needed 383.9 ms while serial CSR dropped to 0.2680 ms. The gap grows because CSR only touches the nonzeros that belong to the current row, while the naive baseline repeatedly rechecks unrelated entries.
 
 Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint assuming 32-bit indices and 64-bit values; the y-axis is plotted in log scale so both small and large testcases are visible. Let $N$ be the number of nonzeros and $R$ be the number of rows. In COO, each nonzero stores a row index, a column index, and a value, so the footprint is approximately $N(4+4+8)=16N$ bytes. In CSR, each nonzero stores one column index and one value, plus a row-pointer array, so the footprint is approximately $N(4+8)+4(R+1)=12N+4(R+1)$ bytes. For large matrices this is consistently smaller. For example, huge\_200k\_100 is about 305.2 MiB in COO versus 229.6 MiB in CSR.
 
@@ -100,7 +100,7 @@ Figure~\ref{fig:storage-footprint} shows the estimated matrix-storage footprint 
 
 The dominant trend is that runtime scales with the amount of nonzero work, not just the row count. Figure~\ref{fig:matrix-size-runtime} orders the matrices by \texttt{nnz}, and both CSR implementations follow that growth. Tiny matrices stay below 0.1 ms, the 1M-nnz matrices land around the sub-millisecond to low-millisecond range, and the 20M-nnz \texttt{huge\_200k\_100} case is the clear outlier.
 
-On \texttt{large\_10000\_sparse\_100} (1,000,000 non-zeros), serial CSR needed 1.604 ms. On \texttt{huge\_200k\_100} (20,000,000 non-zeros), serial CSR rose to 38.41 ms. The 20x increase in non-zeros therefore produced roughly a 23.9x increase in kernel time, which is close to the work increase expected for SpMV.
+On \texttt{large\_10000\_sparse\_100} (1,000,000 nonzeros), serial CSR needed 1.604 ms. On \texttt{huge\_200k\_100} (20,000,000 nonzeros), serial CSR rose to 38.41 ms. The 20x increase in nonzeros therefore produced roughly a 23.9x increase in kernel time, which is close to the work increase expected for SpMV.
 
 \begin{figure}[h]
   \centering
@@ -157,10 +157,10 @@ These experiments primarily measure strong scaling, not weak scaling. For each m
 
 The results show moderate strong scaling on the larger matrices and weak strong scaling on the smaller ones. This is expected for SpMV because the kernel has low arithmetic intensity and quickly becomes limited by memory bandwidth, NUMA traffic, and synchronization overhead. The OpenMP implementation improves strong scaling by preserving locality: static row partitioning aligns with the first-touch initialization, thread pinning spreads threads across cores, and the optional thread-local copy of \texttt{x} reduces shared-vector contention for medium-size inputs.
 
-A true weak-scaling study would increase matrix size proportionally with thread count so that each thread keeps roughly constant work. That was not the experiment required by the assignment questions here, so I describe the observed behaviour as strong scaling.
+A true weak-scaling study would increase matrix size proportionally with thread count so that each thread keeps roughly constant work. That was not the experiment required by the assignment questions here, so I describe the observed behavior as strong scaling.
 
 \section{Additional Insights}
 
-Comparing \texttt{large\_sparse\_2000} and \texttt{large\_denserows\_2000} shows why nnz distribution matters: although they have the same row count, the denser matrix has 10x more non-zeros and correspondingly higher kernel time. The OpenMP version is also not just ``serial CSR plus threads''; its NUMA-aware first-touch and thread-pinning strategy matches the dual-socket machine configuration, which helps maintain effectiveness on larger matrices. Finally, the naive COO-scan baseline remains useful for correctness validation and for illustrating why CSR matters, but it is no longer a practical performance baseline once matrix sizes move beyond small and medium cases.
+Comparing \texttt{large\_sparse\_2000} and \texttt{large\_denserows\_2000} shows why nnz distribution matters: although they have the same row count, the denser matrix has 10x more nonzeros and correspondingly higher kernel time. The OpenMP version is also not just ``serial CSR plus threads''; its NUMA-aware first-touch and thread-pinning strategy matches the dual-socket machine configuration, which helps maintain effectiveness on larger matrices. Finally, the naive COO-scan baseline remains useful for correctness validation and for illustrating why CSR matters, but it is no longer a practical performance baseline once matrix sizes move beyond small and medium cases.
 
 \end{document}
