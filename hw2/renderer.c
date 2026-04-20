@@ -37,12 +37,22 @@ static void rasterize_circle(float *img, int W, int H, float cx, float cy, float
     float Cr = rgb[0] / 255.0f;
     float Cg = rgb[1] / 255.0f;
     float Cb = rgb[2] / 255.0f;
+    float r2 = radius * radius;
 
-    /* STUDENT TODO: implement per-pixel coverage test and write into img.
-     * Example behavior to achieve: for each pixel whose center is inside
-     * the circle, set the img pixel to the circle color (premultiplied).
-     * Keep this function empty for the assignment scaffold.
-     */
+    for (int y = ymin; y <= ymax; ++y) {
+        float py = (float)y + 0.5f;
+        float dy = py - cy;
+        for (int x = xmin; x <= xmax; ++x) {
+            float px = (float)x + 0.5f;
+            float dx = px - cx;
+            if (dx * dx + dy * dy <= r2) {
+                size_t idx = ((size_t)y * W + x) * 3;
+                img[idx + 0] = Cr;
+                img[idx + 1] = Cg;
+                img[idx + 2] = Cb;
+            }
+        }
+    }
 }
 
 int main(int argc, char **argv) {

@@ -18,6 +18,40 @@
 
 #define RECSZ (sizeof(float)*3 + 3)
 
+static void rasterize_circle(float *img, unsigned char *mask, int W, int H,
+                             float cx, float cy, float radius, unsigned char rgb[3]) {
+    int xmin = (int)floorf(cx - radius);
+    int xmax = (int)floorf(cx + radius);
+    int ymin = (int)floorf(cy - radius);
+    int ymax = (int)floorf(cy + radius);
+    if (xmin < 0) xmin = 0;
+    if (ymin < 0) ymin = 0;
+    if (xmax >= W) xmax = W - 1;
+    if (ymax >= H) ymax = H - 1;
+
+    float Cr = rgb[0] / 255.0f;
+    float Cg = rgb[1] / 255.0f;
+    float Cb = rgb[2] / 255.0f;
+    float r2 = radius * radius;
+
+    for (int y = ymin; y <= ymax; ++y) {
+        float py = (float)y + 0.5f;
+        float dy = py - cy;
+        for (int x = xmin; x <= xmax; ++x) {
+            float px = (float)x + 0.5f;
+            float dx = px - cx;
+            if (dx * dx + dy * dy <= r2) {
+                size_t p = (size_t)y * W + x;
+                size_t idx = p * 3;
+                img[idx + 0] = Cr;
+                img[idx + 1] = Cg;
+                img[idx + 2] = Cb;
+                mask[p] = 1;
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
     int rank, nprocs;
@@ -67,11 +101,40 @@ int main(int argc, char **argv) {
         fclose(f);
     }
 
-    // STUDENT TODO: Broadcast header and scatter records (MPI_Scatterv).
-    // Decide which fields to broadcast and how to partition raw bytes.
+    MPI_Bcast(&version, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&count, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(bbox, 6, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&W, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&H, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Broadcast header and scatter records as raw bytes with contiguous ranges per rank.
     int *sendcounts = malloc(sizeof(int) * nprocs);
     int *displs = malloc(sizeof(int) * nprocs);
     for (int i = 0; i < nprocs; ++i) { sendcounts[i] = 0; displs[i] = 0; }
+
+    if (!sendcounts || !displs) { perror("alloc sendcounts/displs"); MPI_Abort(MPI_COMM_WORLD, 1); }
+
+    for (int i = 0; i < nprocs; ++i) {
+        uint64_t recs_i = count / (uint64_t)nprocs + ((uint64_t)i < (count % (uint64_t)nprocs) ? 1u : 0u);
+        uint64_t bytes_i = recs_i * (uint64_t)RECSZ;
+        if (bytes_i > (uint64_t)INT32_MAX) {
+            if (rank == 0) fprintf(stderr, "record chunk too large for MPI_Scatterv int count\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        sendcounts[i] = (int)bytes_i;
+        if (i > 0) displs[i] = displs[i - 1] + sendcounts[i - 1];
+    }
+
+    int mybytes = sendcounts[rank];
+    unsigned char *mybuf = NULL;
+    if (mybytes > 0) {
+        mybuf = malloc((size_t)mybytes);
+        if (!mybuf) { perror("alloc mybuf"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    }
+
+    MPI_Scatterv(all_records, sendcounts, displs, MPI_BYTE,
+                 mybuf, mybytes, MPI_BYTE,
+                 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
         free(all_records);
@@ -82,23 +145,57 @@ int main(int argc, char **argv) {
     size_t npix = (size_t)W * H;
     float *img = calloc(npix * 3, sizeof(float));
     if (!img) { perror("alloc img"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    unsigned char *mask = calloc(npix, 1);
+    if (!mask) { perror("alloc mask"); MPI_Abort(MPI_COMM_WORLD, 1); }
 
-    // STUDENT TODO: Receive raw-record bytes into `mybuf` and rasterize into `img`.
-    // Implement per-record parsing and per-pixel writes here.
+    // Parse local raw records and rasterize in local draw order.
+    int myrecs = mybytes / RECSZ;
+    for (int i = 0; i < myrecs; ++i) {
+        const unsigned char *rec = mybuf + (size_t)i * RECSZ;
+        float cx, cy, radius;
+        unsigned char rgb[3];
+        memcpy(&cx, rec + 0, sizeof(float));
+        memcpy(&cy, rec + sizeof(float), sizeof(float));
+        memcpy(&radius, rec + sizeof(float) * 2, sizeof(float));
+        rgb[0] = rec[sizeof(float) * 3 + 0];
+        rgb[1] = rec[sizeof(float) * 3 + 1];
+        rgb[2] = rec[sizeof(float) * 3 + 2];
 
-    // STUDENT TODO: Gather per-rank images and composite into `acc_img` on root.
-    // Ensure ordering and overwrite semantics match the serial renderer.
-    float *acc_img = calloc(npix * 3, sizeof(float));
-    if (!acc_img) { perror("alloc acc"); MPI_Abort(MPI_COMM_WORLD, 1); }
+        rasterize_circle(img, mask, W, H, cx, cy, radius, rgb);
+    }
+    free(mybuf);
 
-    /* STUDENT TODO: Implement proper gather/composite.
-     */
-    memcpy(acc_img, img, npix * 3 * sizeof(float));
-
-    /* STUDENT TODO: Compose final image.
-     */
+    float *all_imgs = NULL;
+    unsigned char *all_masks = NULL;
+    float *acc_img = NULL;
     if (rank == 0) {
+        all_imgs = malloc((size_t)nprocs * npix * 3 * sizeof(float));
+        all_masks = malloc((size_t)nprocs * npix);
+        acc_img = calloc(npix * 3, sizeof(float));
+        if (!all_imgs || !all_masks || !acc_img) { perror("alloc gather buffers"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    }
 
+    MPI_Gather(img, (int)(npix * 3), MPI_FLOAT,
+               all_imgs, (int)(npix * 3), MPI_FLOAT,
+               0, MPI_COMM_WORLD);
+    MPI_Gather(mask, (int)npix, MPI_UNSIGNED_CHAR,
+               all_masks, (int)npix, MPI_UNSIGNED_CHAR,
+               0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        // Composite in rank order because rank chunks preserve global draw order.
+        for (int r = 0; r < nprocs; ++r) {
+            const float *rimg = all_imgs + (size_t)r * npix * 3;
+            const unsigned char *rmask = all_masks + (size_t)r * npix;
+            for (size_t p = 0; p < npix; ++p) {
+                if (rmask[p]) {
+                    size_t idx = p * 3;
+                    acc_img[idx + 0] = rimg[idx + 0];
+                    acc_img[idx + 1] = rimg[idx + 1];
+                    acc_img[idx + 2] = rimg[idx + 2];
+                }
+            }
+        }
     }
 
     // Provided converter (kept for convenience)
@@ -131,11 +228,14 @@ int main(int argc, char **argv) {
             fprintf(stderr, "rank0: Total wall time (before read -> after write): %.6f s\n", overall_elapsed);
         }
         free(pixels);
+        free(all_imgs);
+        free(all_masks);
         free(acc_img);
         fprintf(stderr, "rank0: Wrote PNG %s\n", outpath);
     }
 
     free(img);
+    free(mask);
     free(sendcounts); free(displs);
     MPI_Finalize();
     return 0;
