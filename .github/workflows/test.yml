@@ -96,6 +96,88 @@ jobs:
             });
           }
 
+  runtime-hw1:
+    runs-on: ubuntu-latest
+    needs: test-hw1
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download testcases
+      run: |
+        pip install gdown
+        gdown 1cF9PeFJQ7UHZaOwxRrlh9i4sewCOWxcB -O testcases.zip
+        unzip testcases.zip -d /tmp/tc
+        mv /tmp/tc/testcases hw1/testcases_ci
+        ls hw1/testcases_ci/
+
+    - name: Build
+      run: gcc -fopenmp -O3 -o hw1/spmv_openmp hw1/spmv_openmp.c
+
+    - name: Run runtime benchmark
+      id: runtime_hw1
+      run: |
+        cd hw1
+        {
+          echo "## HW1 Runtime"
+          echo ""
+          echo "| Testcase | Median runtime (ms) |"
+          echo "|----------|---------------------|"
+
+          for mtx in testcases_ci/*.mtx; do
+            [ -f "$mtx" ] || continue
+            name=$(basename "$mtx" .mtx)
+            vec="${mtx%.mtx}.vec"
+            vec_arg=""
+            [ -f "$vec" ] && vec_arg="$vec"
+
+            samples=""
+            reps=5
+            for i in $(seq 1 $reps); do
+              output=$(OMP_NUM_THREADS=2 ./spmv_openmp "$mtx" $vec_arg 2>&1)
+              time=$(echo "$output" | grep time_ms | sed 's/.*=//')
+              samples="${samples}${time}\n"
+            done
+
+            median=$(printf "%b" "$samples" | sort -g | sed -n "$(( (reps+1)/2 ))p")
+            echo "| ${name} | ${median} |"
+          done
+        } > /tmp/runtime_hw1_result.md
+
+        cat /tmp/runtime_hw1_result.md
+
+    - name: Comment on PR (hw1 runtime)
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('/tmp/runtime_hw1_result.md', 'utf8');
+          const marker = '<!-- hw1-runtime -->';
+          const fullBody = marker + '\n' + body;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c => c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: fullBody,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: fullBody,
+            });
+          }
+
   test-hw2:
     runs-on: ubuntu-latest
     steps:
