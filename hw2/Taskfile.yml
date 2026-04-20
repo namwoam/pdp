@@ -1,0 +1,33 @@
+version: '3'
+
+vars:
+  GDRIVE_FILE_ID: 1Z1ZsjwO96OkU26kBLe18VtbF0W5DvJbC
+  ARCHIVE_PATH: testcases.zip
+  TESTCASE_DIR: testcases
+
+tasks:
+  download-testcases:
+    desc: Download homework 2 testcases with gdown and extract them when possible
+    cmds:
+    - |
+      set -euo pipefail
+
+      echo "Downloading testcases archive from Google Drive..."
+      gdown "{{.GDRIVE_FILE_ID}}" -O "{{.ARCHIVE_PATH}}"
+
+      if [ ! -s "{{.ARCHIVE_PATH}}" ]; then
+        echo "Download failed: archive is missing or empty." >&2
+        exit 1
+      fi
+
+      mkdir -p "{{.TESTCASE_DIR}}"
+
+      if command -v unzip >/dev/null 2>&1 && unzip -t "{{.ARCHIVE_PATH}}" >/dev/null 2>&1; then
+        unzip -o "{{.ARCHIVE_PATH}}" -d "{{.TESTCASE_DIR}}" >/dev/null
+        rm -f "{{.ARCHIVE_PATH}}"
+        echo "Extracted archive to {{.TESTCASE_DIR}}/"
+      else
+        echo "Saved archive to {{.ARCHIVE_PATH}} (not a zip or unzip unavailable)."
+      fi
+
+      echo "download-testcases completed."
