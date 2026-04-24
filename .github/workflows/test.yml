@@ -3,93 +3,395 @@ name: CI
 on:
   pull_request:
     paths:
-      - 'hw1/spmv_openmp.c'
+    - 'hw1/spmv_openmp.c'
+    - 'hw2/**'
+    - '.github/workflows/test.yml'
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  test:
+  test-hw1:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Download testcases
-        run: |
-          pip install gdown
-          gdown 1cF9PeFJQ7UHZaOwxRrlh9i4sewCOWxcB -O testcases.zip
-          unzip testcases.zip -d /tmp/tc
-          mv /tmp/tc/testcases hw1/testcases_ci
-          ls hw1/testcases_ci/
+    - name: Download testcases
+      run: |
+        pip install gdown
+        gdown 1cF9PeFJQ7UHZaOwxRrlh9i4sewCOWxcB -O testcases.zip
+        unzip testcases.zip -d /tmp/tc
+        mv /tmp/tc/testcases hw1/testcases_ci
+        ls hw1/testcases_ci/
 
-      - name: Build
-        run: gcc -fopenmp -O3 -o hw1/spmv_openmp hw1/spmv_openmp.c
+    - name: Build
+      run: gcc -fopenmp -O3 -o hw1/spmv_openmp hw1/spmv_openmp.c
 
-      - name: Run tests
-        id: test
-        run: |
-          cd hw1
-          {
-            echo "## SpMV Test Results"
-            echo ""
-            echo "| Testcase | Result | Time (ms) |"
-            echo "|----------|--------|-----------|"
+    - name: Run tests
+      id: test
+      run: |
+        cd hw1
+        {
+          echo "## SpMV Test Results"
+          echo ""
+          echo "| Testcase | Result | Time (ms) |"
+          echo "|----------|--------|-----------|"
 
-            pass=0; fail=0
-            for mtx in testcases_ci/*.mtx; do
-              [ -f "$mtx" ] || continue
-              name=$(basename "$mtx" .mtx)
-              vec="${mtx%.mtx}.vec"
-              vec_arg=""
-              [ -f "$vec" ] && vec_arg="$vec"
+          pass=0; fail=0
+          for mtx in testcases_ci/*.mtx; do
+            [ -f "$mtx" ] || continue
+            name=$(basename "$mtx" .mtx)
+            vec="${mtx%.mtx}.vec"
+            vec_arg=""
+            [ -f "$vec" ] && vec_arg="$vec"
 
-              output=$(OMP_NUM_THREADS=2 ./spmv_openmp "$mtx" $vec_arg 2>&1)
-              time=$(echo "$output" | grep time_ms | sed 's/.*=//')
-              if echo "$output" | grep -q "^OK$"; then
-                echo "| $name | :white_check_mark: | ${time} |"
-                pass=$((pass+1))
-              else
-                echo "| $name | :x: | ${time} |"
-                fail=$((fail+1))
-              fi
-            done
+            output=$(OMP_NUM_THREADS=2 ./spmv_openmp "$mtx" $vec_arg 2>&1)
+            time=$(echo "$output" | grep time_ms | sed 's/.*=//')
+            if echo "$output" | grep -q "^OK$"; then
+              echo "| $name | :white_check_mark: | ${time} |"
+              pass=$((pass+1))
+            else
+              echo "| $name | :x: | ${time} |"
+              fail=$((fail+1))
+            fi
+          done
 
-            echo ""
-            echo "**${pass} passed, ${fail} failed**"
-          } > /tmp/test_result.md
+          echo ""
+          echo "**${pass} passed, ${fail} failed**"
+        } > /tmp/test_result.md
 
-          cat /tmp/test_result.md
+        cat /tmp/test_result.md
 
-      - name: Comment on PR
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('/tmp/test_result.md', 'utf8');
-            const marker = '<!-- spmv-test -->';
-            const fullBody = marker + '\n' + body;
+    - name: Comment on PR
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('/tmp/test_result.md', 'utf8');
+          const marker = '<!-- spmv-test -->';
+          const fullBody = marker + '\n' + body;
 
-            const { data: comments } = await github.rest.issues.listComments({
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c => c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: fullBody,
+            });
+          } else {
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              body: fullBody,
             });
+          }
 
-            const existing = comments.find(c => c.body.includes(marker));
+  runtime-hw1:
+    runs-on: ubuntu-latest
+    needs: test-hw1
+    steps:
+    - uses: actions/checkout@v4
 
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body: fullBody,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: fullBody,
-              });
-            }
+    - name: Download testcases
+      run: |
+        pip install gdown
+        gdown 1cF9PeFJQ7UHZaOwxRrlh9i4sewCOWxcB -O testcases.zip
+        unzip testcases.zip -d /tmp/tc
+        mv /tmp/tc/testcases hw1/testcases_ci
+        ls hw1/testcases_ci/
+
+    - name: Build
+      run: gcc -fopenmp -O3 -o hw1/spmv_openmp hw1/spmv_openmp.c
+
+    - name: Run runtime benchmark
+      id: runtime_hw1
+      run: |
+        cd hw1
+        {
+          echo "## HW1 Runtime"
+          echo ""
+          echo "| Testcase | Median runtime (ms) |"
+          echo "|----------|---------------------|"
+
+          for mtx in testcases_ci/*.mtx; do
+            [ -f "$mtx" ] || continue
+            name=$(basename "$mtx" .mtx)
+            vec="${mtx%.mtx}.vec"
+            vec_arg=""
+            [ -f "$vec" ] && vec_arg="$vec"
+
+            samples=""
+            reps=5
+            for i in $(seq 1 $reps); do
+              output=$(OMP_NUM_THREADS=2 ./spmv_openmp "$mtx" $vec_arg 2>&1)
+              time=$(echo "$output" | grep time_ms | sed 's/.*=//')
+              samples="${samples}${time}\n"
+            done
+
+            median=$(printf "%b" "$samples" | sort -g | sed -n "$(( (reps+1)/2 ))p")
+            echo "| ${name} | ${median} |"
+          done
+        } > /tmp/runtime_hw1_result.md
+
+        cat /tmp/runtime_hw1_result.md
+
+    - name: Comment on PR (hw1 runtime)
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('/tmp/runtime_hw1_result.md', 'utf8');
+          const marker = '<!-- hw1-runtime -->';
+          const fullBody = marker + '\n' + body;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c => c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: fullBody,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: fullBody,
+            });
+          }
+
+  test-hw2:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install gdown
+        sudo apt-get update
+        sudo apt-get install -y openmpi-bin libopenmpi-dev
+
+    - name: Download hw2 testcases
+      run: |
+        cd hw2
+        gdown 1Z1ZsjwO96OkU26kBLe18VtbF0W5DvJbC -O testcases.zip
+        unzip -o testcases.zip -d testcases
+        rm -f testcases.zip
+
+    - name: Build hw2 binaries
+      run: |
+        cd hw2
+        gcc renderer.c -O3 -lm -o renderer
+        mpicc renderer_mpi.c -O3 -lm -march=native -o renderer_mpi
+
+    - name: Run hw2 correctness tests
+      id: test_hw2
+      run: |
+        cd hw2
+        set -euo pipefail
+
+        {
+          echo "## HW2 Renderer Test Results"
+          echo ""
+          echo "| Testcase | Serial | MPI |"
+          echo "|----------|--------|-----|"
+
+          pass=0
+          fail=0
+
+          run_case() {
+            name="$1"
+            in_file="testcases/testcases/${name}.bin"
+            golden="testcases/testcases/golden/${name}.png"
+
+            serial_status=":white_check_mark:"
+            mpi_status=":white_check_mark:"
+
+            ./renderer "$in_file" "out_serial_${name}.png" >/tmp/hw2_serial_${name}.log 2>&1 || serial_status=":x:"
+            mpirun --oversubscribe -n 4 ./renderer_mpi "$in_file" "out_mpi_${name}.png" >/tmp/hw2_mpi_${name}.log 2>&1 || mpi_status=":x:"
+
+            if [ "$serial_status" = ":white_check_mark:" ] && ! cmp -s "out_serial_${name}.png" "$golden"; then
+              serial_status=":x:"
+            fi
+            if [ "$mpi_status" = ":white_check_mark:" ] && ! cmp -s "out_mpi_${name}.png" "$golden"; then
+              mpi_status=":x:"
+            fi
+
+            if [ "$serial_status" = ":white_check_mark:" ] && [ "$mpi_status" = ":white_check_mark:" ]; then
+              pass=$((pass+1))
+            else
+              fail=$((fail+1))
+            fi
+
+            echo "| ${name} | ${serial_status} | ${mpi_status} |"
+          }
+
+          run_case medium_c200000
+          run_case imbalance_c100000
+
+          echo ""
+          echo "**${pass} passed, ${fail} failed**"
+        } > /tmp/test_hw2_result.md
+
+        cat /tmp/test_hw2_result.md
+
+        if grep -q ":x:" /tmp/test_hw2_result.md; then
+          exit 1
+        fi
+
+    - name: Comment on PR (hw2)
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('/tmp/test_hw2_result.md', 'utf8');
+          const marker = '<!-- hw2-renderer-test -->';
+          const fullBody = marker + '\n' + body;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c => c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: fullBody,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: fullBody,
+            });
+          }
+
+  runtime-hw2:
+    runs-on: ubuntu-latest
+    needs: test-hw2
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install gdown
+        sudo apt-get update
+        sudo apt-get install -y openmpi-bin libopenmpi-dev
+
+    - name: Download hw2 testcases
+      run: |
+        cd hw2
+        gdown 1Z1ZsjwO96OkU26kBLe18VtbF0W5DvJbC -O testcases.zip
+        unzip -o testcases.zip -d testcases
+        rm -f testcases.zip
+
+    - name: Build hw2 binaries
+      run: |
+        cd hw2
+        gcc renderer.c -O3 -lm -o renderer
+        mpicc renderer_mpi.c -O3 -lm -march=native -o renderer_mpi
+
+    - name: Run hw2 runtime benchmark
+      id: runtime_hw2
+      run: |
+        cd hw2
+        set -euo pipefail
+
+        {
+          echo "## HW2 Runtime"
+          echo ""
+          echo "| Testcase | Serial median (s) | MPI median (s) | Speedup (serial/mpi) |"
+          echo "|----------|-------------------|----------------|----------------------|"
+
+          run_bench_case() {
+            name="$1"
+            in_file="testcases/testcases/${name}.bin"
+            reps=3
+            serial_samples=""
+            mpi_samples=""
+
+            for i in $(seq 1 $reps); do
+              serial_log="/tmp/hw2_runtime_serial_${name}_${i}.log"
+              mpi_log="/tmp/hw2_runtime_mpi_${name}_${i}.log"
+
+              ./renderer "$in_file" "out_runtime_serial_${name}.png" > /dev/null 2>"$serial_log"
+              mpirun --oversubscribe -n 4 ./renderer_mpi "$in_file" "out_runtime_mpi_${name}.png" > /dev/null 2>"$mpi_log"
+
+              serial_time=$(sed -n 's/.*Total render time: \([0-9.]*\) s.*/\1/p' "$serial_log" | tail -n1)
+              mpi_time=$(sed -n 's/.*Total wall time (before read -> after write): \([0-9.]*\) s.*/\1/p' "$mpi_log" | tail -n1)
+
+              serial_samples="${serial_samples}${serial_time}\n"
+              mpi_samples="${mpi_samples}${mpi_time}\n"
+            done
+
+            serial_median=$(printf "%b" "$serial_samples" | sort -g | sed -n "$(( (reps+1)/2 ))p")
+            mpi_median=$(printf "%b" "$mpi_samples" | sort -g | sed -n "$(( (reps+1)/2 ))p")
+            speedup=$(awk -v s="$serial_median" -v m="$mpi_median" 'BEGIN { if (m > 0) printf "%.2fx", s/m; else print "-" }')
+
+            echo "| ${name} | ${serial_median} | ${mpi_median} | ${speedup} |"
+          }
+
+          run_bench_case medium_c200000
+          run_bench_case imbalance_c100000
+        } > /tmp/runtime_hw2_result.md
+
+        cat /tmp/runtime_hw2_result.md
+
+    - name: Comment on PR (hw2 runtime)
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('/tmp/runtime_hw2_result.md', 'utf8');
+          const marker = '<!-- hw2-runtime -->';
+          const fullBody = marker + '\n' + body;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c => c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: fullBody,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: fullBody,
+            });
+          }
