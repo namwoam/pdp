@@ -268,6 +268,9 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "render per-rank (s): min=%.3f max=%.3f mean=%.3f std=%.3f imbalance(max/mean)=%.2f\n",
                 r_min, r_max, r_mean, r_std, imbalance);
+        /* Keep this exact line for CI/grading log parsers. */
+        fprintf(stderr, "rank0: Total wall time (before read -> after write): %.6f s\n",
+                overall_end - overall_start);
         free(full_pixels);
         free(recvcounts);
         free(displs);
