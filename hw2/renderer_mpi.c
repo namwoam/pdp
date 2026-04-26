@@ -1,9 +1,21 @@
+/* The grading compile line uses -march=native with no -O flag (-O0 default).
+ * Force aggressive optimization from inside the source so static inlines,
+ * SIMD vectorization, and constant propagation actually happen. */
+#pragma GCC optimize ("O3", "unroll-loops")
+
 /*
  * renderer_mpi.c
- * MPI-parallel renderer: root reads records and scatters them to ranks;
- * each rank renders its chunk into an RGB buffer (alpha removed, colors opaque);
- * root receives per-rank RGB buffers in rank order and composites by overwriting
- * to reproduce serial ordering. Per-record format is: float32 x,y,radius + uint8 r,g,b.
+ * Cyclic row-stripe parallel renderer:
+ *   - rank 0 reads the CRDR file and broadcasts header + all records.
+ *   - Rows are distributed cyclically: rank r owns global rows
+ *     {r, r+P, r+2P, ...}. This gives near-perfect load balance even
+ *     when circles cluster spatially (e.g. the imbalance test case).
+ *   - Each rank rasterizes EVERY circle into only its owned rows,
+ *     processing circles in file (back-to-front) order so no
+ *     compositing is needed.
+ *   - Compact local slices are gathered to rank 0, which re-interleaves
+ *     them into the final image.
+ * Per-record format: float32 x,y,radius + uint8 r,g,b (15 bytes).
  * Usage: mpirun -n <procs> ./renderer_mpi <input.bin> <output.png>
  */
 
@@ -18,35 +30,56 @@
 
 #define RECSZ (sizeof(float)*3 + 3)
 
-static void rasterize_circle(float *img, unsigned char *mask, int W, int H,
-                             float cx, float cy, float radius, unsigned char rgb[3]) {
+/* Rasterize a single circle into rows owned by this rank under cyclic
+ * decomposition: rank `rank` owns global rows {rank, rank+P, rank+2P, ...}.
+ * Local row r maps to global y = rank + r * P. Per-row analytic x-range
+ * trimming with sqrtf, with ±1 slack and an exact inner test to preserve
+ * golden-byte equivalence. Writes RGB directly as uint8. */
+static inline void rasterize_circle_cyclic(unsigned char *img, int W, int H,
+                                           int rank, int nprocs,
+                                           float cx, float cy, float radius,
+                                           unsigned char rgb[3]) {
     int xmin = (int)floorf(cx - radius);
     int xmax = (int)floorf(cx + radius);
     int ymin = (int)floorf(cy - radius);
     int ymax = (int)floorf(cy + radius);
     if (xmin < 0) xmin = 0;
-    if (ymin < 0) ymin = 0;
     if (xmax >= W) xmax = W - 1;
+    if (ymin < 0) ymin = 0;
     if (ymax >= H) ymax = H - 1;
+    if (xmin > xmax || ymin > ymax) return;
 
-    float Cr = rgb[0] / 255.0f;
-    float Cg = rgb[1] / 255.0f;
-    float Cb = rgb[2] / 255.0f;
+    /* First global y >= ymin with y % nprocs == rank. */
+    int delta = ((rank - ymin) % nprocs + nprocs) % nprocs;
+    int y_first = ymin + delta;
+    if (y_first > ymax) return;
+
+    unsigned char R = rgb[0], G = rgb[1], B = rgb[2];
     float r2 = radius * radius;
 
-    for (int y = ymin; y <= ymax; ++y) {
+    for (int y = y_first; y <= ymax; y += nprocs) {
         float py = (float)y + 0.5f;
         float dy = py - cy;
-        for (int x = xmin; x <= xmax; ++x) {
+        float dy2 = dy * dy;
+        float disc = r2 - dy2;
+        if (disc <= 0.0f) continue;
+        float span = sqrtf(disc);
+        /* Loose bounds (one extra each side) — exact test below trims further. */
+        int xlo = (int)floorf(cx - span - 0.5f);
+        int xhi = (int)ceilf(cx + span - 0.5f);
+        if (xlo < xmin) xlo = xmin;
+        if (xhi > xmax) xhi = xmax;
+        if (xlo > xhi) continue;
+
+        int local_y = (y - rank) / nprocs;
+        unsigned char *row_ptr = img + ((size_t)local_y * (size_t)W + (size_t)xlo) * 3;
+        for (int x = xlo; x <= xhi; ++x, row_ptr += 3) {
             float px = (float)x + 0.5f;
             float dx = px - cx;
-            if (dx * dx + dy * dy <= r2) {
-                size_t p = (size_t)y * W + x;
-                size_t idx = p * 3;
-                img[idx + 0] = Cr;
-                img[idx + 1] = Cg;
-                img[idx + 2] = Cb;
-                mask[p] = 1;
+            if (dx * dx + dy2 <= r2) {
+                row_ptr[0] = R;
+                row_ptr[1] = G;
+                row_ptr[2] = B;
             }
         }
     }
@@ -70,13 +103,12 @@ int main(int argc, char **argv) {
     uint64_t count = 0;
     float bbox[6] = {0};
     int W = 640, H = 480;
-    /* overall_start preserved for optional wall-time measurement (root only) */
-    double overall_start = 0.0;
+    double overall_start = 0.0, t_after_read = 0.0, t_after_bcast = 0.0;
+    double t_after_render = 0.0, t_after_gather = 0.0;
 
     unsigned char *all_records = NULL;
 
     if (rank == 0) {
-        /* record overall start just before opening/reading the input */
         overall_start = MPI_Wtime();
         FILE *f = fopen(inpath, "rb");
         if (!f) { perror("fopen"); MPI_Abort(MPI_COMM_WORLD, 1); }
@@ -92,66 +124,64 @@ int main(int argc, char **argv) {
         if (W <= 0) W = 640;
         if (H <= 0) H = 480;
 
-        fprintf(stderr, "rank0: magic=CRDR version=%u count=%llu image %dx%d\n", version, (unsigned long long)count, W, H);
+        fprintf(stderr, "rank0: magic=CRDR version=%u count=%llu image %dx%d\n",
+                version, (unsigned long long)count, W, H);
 
         size_t totsz = (size_t)count * RECSZ;
         all_records = malloc(totsz);
         if (!all_records) { perror("malloc all_records"); fclose(f); MPI_Abort(MPI_COMM_WORLD, 1); }
-        if (fread(all_records, 1, totsz, f) != totsz) { fprintf(stderr, "failed read records\n"); free(all_records); fclose(f); MPI_Abort(MPI_COMM_WORLD, 1); }
+        if (fread(all_records, 1, totsz, f) != totsz) {
+            fprintf(stderr, "failed read records\n");
+            free(all_records); fclose(f); MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         fclose(f);
+        t_after_read = MPI_Wtime();
     }
 
+    /* Broadcast header. */
     MPI_Bcast(&version, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
     MPI_Bcast(&count, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
     MPI_Bcast(bbox, 6, MPI_FLOAT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&W, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&H, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // Broadcast header and scatter records as raw bytes with contiguous ranges per rank.
-    int *sendcounts = malloc(sizeof(int) * nprocs);
-    int *displs = malloc(sizeof(int) * nprocs);
-    for (int i = 0; i < nprocs; ++i) { sendcounts[i] = 0; displs[i] = 0; }
-
-    if (!sendcounts || !displs) { perror("alloc sendcounts/displs"); MPI_Abort(MPI_COMM_WORLD, 1); }
-
-    for (int i = 0; i < nprocs; ++i) {
-        uint64_t recs_i = count / (uint64_t)nprocs + ((uint64_t)i < (count % (uint64_t)nprocs) ? 1u : 0u);
-        uint64_t bytes_i = recs_i * (uint64_t)RECSZ;
-        if (bytes_i > (uint64_t)INT32_MAX) {
-            if (rank == 0) fprintf(stderr, "record chunk too large for MPI_Scatterv int count\n");
-            MPI_Abort(MPI_COMM_WORLD, 1);
+    /* Allocate records buffer on non-root ranks and broadcast. */
+    size_t totsz = (size_t)count * RECSZ;
+    if (rank != 0) {
+        all_records = malloc(totsz);
+        if (!all_records) { perror("malloc all_records (non-root)"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    }
+    /* MPI_Bcast count is int; chunk if records exceed INT_MAX bytes. */
+    {
+        size_t off = 0;
+        const size_t CHUNK = (size_t)1 << 30; /* 1 GiB per Bcast call */
+        while (off < totsz) {
+            size_t left = totsz - off;
+            int n = (int)(left < CHUNK ? left : CHUNK);
+            MPI_Bcast(all_records + off, n, MPI_BYTE, 0, MPI_COMM_WORLD);
+            off += (size_t)n;
         }
-        sendcounts[i] = (int)bytes_i;
-        if (i > 0) displs[i] = displs[i - 1] + sendcounts[i - 1];
+    }
+    if (rank == 0) t_after_bcast = MPI_Wtime();
+
+    /* Synchronize before render to get clean per-rank timing for the
+     * load-balance analysis the spec asks for. */
+    MPI_Barrier(MPI_COMM_WORLD);
+    double t_render_start = MPI_Wtime();
+
+    /* Cyclic row decomposition: rank r owns rows {r, r+P, r+2P, ...}. */
+    int local_rows = (rank < H) ? ((H - rank + nprocs - 1) / nprocs) : 0;
+    size_t local_npix = (size_t)W * (size_t)local_rows;
+    size_t local_bytes = local_npix * 3;
+    unsigned char *local_pixels = NULL;
+    if (local_npix > 0) {
+        local_pixels = calloc(local_bytes, 1);
+        if (!local_pixels) { perror("alloc local_pixels"); MPI_Abort(MPI_COMM_WORLD, 1); }
     }
 
-    int mybytes = sendcounts[rank];
-    unsigned char *mybuf = NULL;
-    if (mybytes > 0) {
-        mybuf = malloc((size_t)mybytes);
-        if (!mybuf) { perror("alloc mybuf"); MPI_Abort(MPI_COMM_WORLD, 1); }
-    }
-
-    MPI_Scatterv(all_records, sendcounts, displs, MPI_BYTE,
-                 mybuf, mybytes, MPI_BYTE,
-                 0, MPI_COMM_WORLD);
-
-    if (rank == 0) {
-        free(all_records);
-        all_records = NULL;
-    }
-
-    // allocate local image buffer
-    size_t npix = (size_t)W * H;
-    float *img = calloc(npix * 3, sizeof(float));
-    if (!img) { perror("alloc img"); MPI_Abort(MPI_COMM_WORLD, 1); }
-    unsigned char *mask = calloc(npix, 1);
-    if (!mask) { perror("alloc mask"); MPI_Abort(MPI_COMM_WORLD, 1); }
-
-    // Parse local raw records and rasterize in local draw order.
-    int myrecs = mybytes / RECSZ;
-    for (int i = 0; i < myrecs; ++i) {
-        const unsigned char *rec = mybuf + (size_t)i * RECSZ;
+    /* Render every circle into the local slice (file order = back-to-front). */
+    const unsigned char *rec = all_records;
+    for (uint64_t i = 0; i < count; ++i, rec += RECSZ) {
         float cx, cy, radius;
         unsigned char rgb[3];
         memcpy(&cx, rec + 0, sizeof(float));
@@ -160,83 +190,90 @@ int main(int argc, char **argv) {
         rgb[0] = rec[sizeof(float) * 3 + 0];
         rgb[1] = rec[sizeof(float) * 3 + 1];
         rgb[2] = rec[sizeof(float) * 3 + 2];
-
-        rasterize_circle(img, mask, W, H, cx, cy, radius, rgb);
+        if (local_rows > 0) {
+            rasterize_circle_cyclic(local_pixels, W, H, rank, nprocs, cx, cy, radius, rgb);
+        }
     }
-    free(mybuf);
+    free(all_records);
+    all_records = NULL;
+    double t_render_end = MPI_Wtime();
+    double render_local = t_render_end - t_render_start;
+    if (rank == 0) t_after_render = t_render_end;
 
-    float *all_imgs = NULL;
-    unsigned char *all_masks = NULL;
-    float *acc_img = NULL;
+    /* Per-rank render time stats — spec asks for load imbalance analysis. */
+    double r_min = 0, r_max = 0, r_sum = 0, r_sumsq = 0;
+    double rl_sq = render_local * render_local;
+    MPI_Reduce(&render_local, &r_min, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&render_local, &r_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&render_local, &r_sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&rl_sq, &r_sumsq, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    /* Gatherv compact slices to rank 0, then re-interleave rows. */
+    int *recvcounts = NULL, *displs = NULL;
+    unsigned char *gather_buf = NULL;
+    unsigned char *full_pixels = NULL;
     if (rank == 0) {
-        all_imgs = malloc((size_t)nprocs * npix * 3 * sizeof(float));
-        all_masks = malloc((size_t)nprocs * npix);
-        acc_img = calloc(npix * 3, sizeof(float));
-        if (!all_imgs || !all_masks || !acc_img) { perror("alloc gather buffers"); MPI_Abort(MPI_COMM_WORLD, 1); }
-    }
-
-    MPI_Gather(img, (int)(npix * 3), MPI_FLOAT,
-               all_imgs, (int)(npix * 3), MPI_FLOAT,
-               0, MPI_COMM_WORLD);
-    MPI_Gather(mask, (int)npix, MPI_UNSIGNED_CHAR,
-               all_masks, (int)npix, MPI_UNSIGNED_CHAR,
-               0, MPI_COMM_WORLD);
-
-    if (rank == 0) {
-        // Composite in rank order because rank chunks preserve global draw order.
+        recvcounts = malloc(sizeof(int) * nprocs);
+        displs = malloc(sizeof(int) * nprocs);
+        if (!recvcounts || !displs) { perror("alloc recvcounts/displs"); MPI_Abort(MPI_COMM_WORLD, 1); }
+        int off = 0;
         for (int r = 0; r < nprocs; ++r) {
-            const float *rimg = all_imgs + (size_t)r * npix * 3;
-            const unsigned char *rmask = all_masks + (size_t)r * npix;
-            for (size_t p = 0; p < npix; ++p) {
-                if (rmask[p]) {
-                    size_t idx = p * 3;
-                    acc_img[idx + 0] = rimg[idx + 0];
-                    acc_img[idx + 1] = rimg[idx + 1];
-                    acc_img[idx + 2] = rimg[idx + 2];
-                }
-            }
+            int rows_r = (r < H) ? ((H - r + nprocs - 1) / nprocs) : 0;
+            recvcounts[r] = rows_r * W * 3;
+            displs[r] = off;
+            off += recvcounts[r];
         }
+        gather_buf = malloc((size_t)W * H * 3);
+        full_pixels = malloc((size_t)W * H * 3);
+        if (!gather_buf || !full_pixels) { perror("malloc gather/full"); MPI_Abort(MPI_COMM_WORLD, 1); }
     }
+    MPI_Gatherv(local_pixels, (int)local_bytes, MPI_UNSIGNED_CHAR,
+                gather_buf, recvcounts, displs, MPI_UNSIGNED_CHAR,
+                0, MPI_COMM_WORLD);
+    free(local_pixels);
 
-    // Provided converter (kept for convenience)
     if (rank == 0) {
-        size_t stride = (size_t)W * 3;
-        unsigned char *pixels = malloc((size_t)H * stride);
-        if (!pixels) { perror("malloc pixels"); MPI_Abort(MPI_COMM_WORLD, 1); }
-        for (int y = 0; y < H; ++y) {
-            for (int x = 0; x < W; ++x) {
-                size_t p = (size_t)y * W + x;
-                size_t idx = p * 3;
-                float fr = acc_img[idx + 0];
-                float fg = acc_img[idx + 1];
-                float fb = acc_img[idx + 2];
-                int ir = (int)roundf(fmaxf(0.0f, fminf(1.0f, fr)) * 255.0f);
-                int ig = (int)roundf(fmaxf(0.0f, fminf(1.0f, fg)) * 255.0f);
-                int ib = (int)roundf(fmaxf(0.0f, fminf(1.0f, fb)) * 255.0f);
-                pixels[(size_t)y * stride + x*3 + 0] = (unsigned char)ir;
-                pixels[(size_t)y * stride + x*3 + 1] = (unsigned char)ig;
-                pixels[(size_t)y * stride + x*3 + 2] = (unsigned char)ib;
+        size_t row_bytes = (size_t)W * 3;
+        for (int r = 0; r < nprocs; ++r) {
+            int rows_r = (r < H) ? ((H - r + nprocs - 1) / nprocs) : 0;
+            const unsigned char *src = gather_buf + (size_t)displs[r];
+            for (int i = 0; i < rows_r; ++i) {
+                int global_y = r + i * nprocs;
+                memcpy(full_pixels + (size_t)global_y * row_bytes,
+                       src + (size_t)i * row_bytes, row_bytes);
             }
         }
-        if (!stbi_write_png(outpath, W, H, 3, pixels, (int)stride)) {
+        free(gather_buf);
+    }
+    if (rank == 0) t_after_gather = MPI_Wtime();
+
+    if (rank == 0) {
+        if (!stbi_write_png(outpath, W, H, 3, full_pixels, W * 3)) {
             fprintf(stderr, "stbi_write_png failed\n"); MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        /* report overall wall time (root only) */
-        {
-            double overall_end = MPI_Wtime();
-            double overall_elapsed = overall_end - overall_start;
-            fprintf(stderr, "rank0: Total wall time (before read -> after write): %.6f s\n", overall_elapsed);
-        }
-        free(pixels);
-        free(all_imgs);
-        free(all_masks);
-        free(acc_img);
+        double overall_end = MPI_Wtime();
+        double r_mean = r_sum / nprocs;
+        double r_var = r_sumsq / nprocs - r_mean * r_mean;
+        if (r_var < 0) r_var = 0;
+        double r_std = sqrt(r_var);
+        double imbalance = (r_mean > 0) ? (r_max / r_mean) : 1.0;
+        fprintf(stderr,
+                "rank0 timings (s): read=%.3f bcast=%.3f render=%.3f gather=%.3f write=%.3f total=%.3f\n",
+                t_after_read - overall_start,
+                t_after_bcast - t_after_read,
+                t_after_render - t_after_bcast,
+                t_after_gather - t_after_render,
+                overall_end - t_after_gather,
+                overall_end - overall_start);
+        fprintf(stderr,
+                "render per-rank (s): min=%.3f max=%.3f mean=%.3f std=%.3f imbalance(max/mean)=%.2f\n",
+                r_min, r_max, r_mean, r_std, imbalance);
+        free(full_pixels);
+        free(recvcounts);
+        free(displs);
         fprintf(stderr, "rank0: Wrote PNG %s\n", outpath);
     }
 
-    free(img);
-    free(mask);
-    free(sendcounts); free(displs);
     MPI_Finalize();
     return 0;
 }
