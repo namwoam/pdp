@@ -124,8 +124,8 @@ int main(int argc, char **argv) {
         if (W <= 0) W = 640;
         if (H <= 0) H = 480;
 
-        fprintf(stderr, "rank0: magic=CRDR version=%u count=%llu image %dx%d\n",
-                version, (unsigned long long)count, W, H);
+        fprintf(stderr, "rank0: magic=CRDR version=%u count=%llu image %dx%d nproc=%d\n",
+                version, (unsigned long long)count, W, H, nprocs);
 
         size_t totsz = (size_t)count * RECSZ;
         all_records = malloc(totsz);

@@ -1,7 +1,7 @@
 # ignore executable files
 renderer
 renderer_mpi
-renderer_serial
+mpi_heu
 
 # ignore bench artifacts
 out/

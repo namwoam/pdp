@@ -225,7 +225,8 @@ int main(int argc, char **argv) {
 
     if (rank == 0) {
         double avg_time = sum_time / (double)nprocs;
-        fprintf(stderr, "per-rank render time (s): min=%.6f max=%.6f avg=%.6f\n", min_time, max_time, avg_time);
+        double imbalance = (avg_time > 0) ? (max_time / avg_time) : 1.0;
+        fprintf(stderr, "per-rank render time (s): min=%.6f max=%.6f avg=%.6f max on avg=%.6f\n", min_time, max_time, avg_time, imbalance);
     }
 
     // Root gathers/receives buffers in rank order and composites onto acc_img/acc_alpha
@@ -279,7 +280,7 @@ int main(int argc, char **argv) {
         }
         comp_end = MPI_Wtime();
         comp_elapsed = comp_end - comp_start;
-        fprintf(stderr, "rank0: composite+write time: %.6f s\n", comp_elapsed);
+        fprintf(stderr, "rank0: composite+write time: total=%.3f s\n", comp_elapsed);
         free(pixels);
         free(acc_img);
         free(tmp_img);
