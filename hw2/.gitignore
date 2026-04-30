@@ -2,6 +2,7 @@
 renderer
 renderer_mpi
 mpi_heu
+renderer_serial
 
 # ignore bench artifacts
 out/
