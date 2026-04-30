@@ -37,13 +37,14 @@ int main(int argc, char **argv) {
     uint64_t count = 0;
     float bbox[6] = {0};
     int W = 640, H = 480;
-    /* Root I/O/scatter and composite timing (seconds, via MPI_Wtime) */
+    double overall_start = 0.0, t_after_read = 0.0, t_after_bcast = 0.0;
     double io_start = 0.0, io_end = 0.0, io_elapsed = 0.0;
     double comp_start = 0.0, comp_end = 0.0, comp_elapsed = 0.0;
 
     unsigned char *all_records = NULL;
 
     if (rank == 0) {
+        overall_start = MPI_Wtime(); //TODO: print overall time
         FILE *f = fopen(inpath, "rb");
         io_start = MPI_Wtime();
         if (!f) { perror("fopen"); MPI_Abort(MPI_COMM_WORLD, 1); }
@@ -66,9 +67,10 @@ int main(int argc, char **argv) {
         if (!all_records) { perror("malloc all_records"); fclose(f); MPI_Abort(MPI_COMM_WORLD, 1); }
         if (fread(all_records, 1, totsz, f) != totsz) { fprintf(stderr, "failed read records\n"); free(all_records); fclose(f); MPI_Abort(MPI_COMM_WORLD, 1); }
         fclose(f);
+        t_after_read = MPI_Wtime(); //TODO: add t_after_read and [overall_start, ]
     }
 
-    // Broadcast header info
+    // Broadcast header
     MPI_Bcast(&version, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
     MPI_Bcast(&count, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
     MPI_Bcast(bbox, 6, MPI_FLOAT, 0, MPI_COMM_WORLD);
@@ -131,6 +133,7 @@ int main(int argc, char **argv) {
 
     // Broadcast record counts per rank so all processes compute same sendcounts/displs
     MPI_Bcast(rec_counts, nprocs, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    if(rank == 0) t_after_bcast = MPI_Wtime();
 
     // build byte sendcounts/displs on all ranks from rec_counts
     size_t offset = 0;

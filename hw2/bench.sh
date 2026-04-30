@@ -5,10 +5,10 @@
 # Read-only by default. Use `./bench.sh --save` to overwrite the baseline
 # with the current run's medians.
 #
-# Single-node sweep over NPROCS={1,4,8,16} on each testcase. Multi-node
-# can be enabled with HOSTFILE=hosts NPROCS=64 (or similar, matching the
-# spec run command). Spec restriction: max 16 procs/threads per node —
-# bench warns if NPROCS > 16 without a hostfile.
+# Default sweep covers single-node {1,4,8,16} AND the competition config
+# n=64 (4 nodes x 16 procs/node via $HOSTFILE). For any n>16 the script
+# auto-routes to multi-node with the spec's exact UCX env + mpirun flags
+# and scp's the freshly-built binary to peer nodes ($PEER_NODES).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -18,17 +18,33 @@ TESTCASES=${TESTCASES:-/home/Team12/testcases}
 GOLDEN=${GOLDEN:-/home/Team12/testcases/golden}
 BASE=bench_baseline.txt
 REPS=${REPS:-3}
-NPROCS=${NPROCS:-"1 4 8 16"}
-HOSTFILE=${HOSTFILE:-}            # set to "hosts" for multi-node
+NPROCS=${NPROCS:-"1 4 8 16 64"}
+HOSTFILE=${HOSTFILE:-hosts}       # spec-style hostfile, used when n>16
 NPERNODE=${NPERNODE:-16}          # spec cap: 16 procs/node
+PEER_NODES=${PEER_NODES:-"rdma1 rdma2 rdma3"}  # for binary distribution
 
 SAVE=0
 [ "${1:-}" = "--save" ] && SAVE=1
 
 # Build with EXACT spec compile command
+REBUILT=0
 if [ ! -x "./$BIN" ] || [ "$SRC" -nt "./$BIN" ]; then
     echo "building: mpicc $SRC -o $BIN -lm -march=native"
     mpicc "$SRC" -o "$BIN" -lm -march=native
+    REBUILT=1
+fi
+
+# Distribute binary to peer nodes if any multi-node n is in the sweep
+# (always sync — peers may have a stale build from a previous run)
+NEED_MULTI=0
+for n in $NPROCS; do [ "$n" -gt 16 ] && NEED_MULTI=1; done
+if [ "$NEED_MULTI" = 1 ] && [ -f "$HOSTFILE" ]; then
+    SELF_BIN=$(readlink -f "./$BIN")
+    for h in $PEER_NODES; do
+        ssh -o BatchMode=yes "$h" "mkdir -p $(dirname "$SELF_BIN")" 2>/dev/null || true
+        scp -q "./$BIN" "$h:$SELF_BIN"
+    done
+    echo "distributed $BIN -> $PEER_NODES"
 fi
 
 mkdir -p out
@@ -49,9 +65,12 @@ for tc_path in "$TESTCASES"/*.bin; do
         out_png="out/${tc}_n${n}.png"
         rm -f "$out_png"
 
-        if [ -n "$HOSTFILE" ] && [ -f "$HOSTFILE" ]; then
-            # multi-node: use spec-style flags
-            mpi_run=(mpirun --hostfile "$HOSTFILE" -n "$n" -npernode "$NPERNODE"
+        if [ "$n" -gt 16 ] && [ -f "$HOSTFILE" ]; then
+            # multi-node: spec Section 4 mpirun flags. The spec also lists
+            # UCX_TLS / UCX_NET_DEVICES env vars, but on this cluster they
+            # break PML ucx selection — the mca flags alone pick the right
+            # transport. Override $UCX_ENV to add them back if grading does.
+            mpi_run=(${UCX_ENV:-} mpirun --hostfile "$HOSTFILE" -n "$n" -npernode "$NPERNODE"
                      --mca pml ucx --mca btl ^tcp)
         else
             if [ "$n" -gt 16 ]; then
