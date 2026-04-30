@@ -10,4 +10,6 @@ out/
 # ignore test data and outputs
 *.bin
 *.png
+!figure/
+!figure/*.png
 *.zip
