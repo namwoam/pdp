@@ -6,6 +6,7 @@
  * to reproduce serial ordering. Per-record format is: float32 x,y,radius + uint8 r,g,b.
  * Usage: mpirun -n <procs> ./renderer_mpi <input.bin> <output.png>
  */
+#pragma GCC optimize ("O3", "unroll-loops")
 
 #include <mpi.h>
 #include <stdio.h>
