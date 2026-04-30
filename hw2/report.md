@@ -7,7 +7,7 @@ This project implements the required CRDR circle renderer in `renderer.c` and th
 All benchmarked outputs were byte-identical to the provided golden PNG files. The benchmark data used in this report were generated with:
 
 ```bash
-REPS=10 NPROCS="1 4 8 16" ./bench.sh
+REPS=10 NPROCS="1 4 8 16 64" ./bench.sh
 poetry run python scripts/generate_report_assets.py
 ```
 
@@ -16,6 +16,7 @@ The generated data and figures are stored in:
 - `data/testcase_metadata.csv`
 - `data/benchmark_results.csv`
 - `data/summary_16proc.csv`
+- `data/summary_64proc.csv`
 - `figure/strong_scaling_runtime.png`
 - `figure/speedup.png`
 - `figure/efficiency.png`
@@ -54,25 +55,25 @@ The benchmark uses the median wall time across 10 repetitions for each `(testcas
 
 ![Speedup](figure/speedup.png)
 
-| Testcase | 1 proc (s) | 4 proc (s) | 8 proc (s) | 16 proc (s) | 16-proc speedup | 16-proc efficiency |
-|---|---:|---:|---:|---:|---:|---:|
-| `imbalance_c100000` | 0.225 | 0.092 | 0.087 | 0.068 | 3.31x | 20.7% |
-| `medium_c200000` | 0.368 | 0.147 | 0.119 | 0.092 | 4.00x | 25.0% |
-| `large_c1000000` | 1.715 | 0.552 | 0.393 | 0.298 | 5.76x | 36.0% |
-| `large_c2000000` | 3.407 | 1.114 | 0.667 | 0.480 | 7.10x | 44.4% |
-| `large_c4000000` | 4.506 | 2.126 | 1.254 | 0.860 | 5.24x | 32.7% |
+| Testcase | 1 proc (s) | 4 proc (s) | 8 proc (s) | 16 proc (s) | 64 proc (s) | 64-proc speedup | 64-proc efficiency |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `imbalance_c100000` | 0.165 | 0.098 | 0.088 | 0.068 | 0.065 | 2.54x | 4.0% |
+| `medium_c200000` | 0.368 | 0.163 | 0.127 | 0.098 | 0.090 | 4.09x | 6.4% |
+| `large_c1000000` | 1.780 | 0.325 | 0.224 | 0.163 | 0.153 | 11.63x | 18.2% |
+| `large_c2000000` | 3.336 | 0.609 | 0.375 | 0.284 | 0.252 | 13.24x | 20.7% |
+| `large_c4000000` | 4.534 | 1.186 | 0.656 | 0.470 | 0.445 | 10.19x | 15.9% |
 
-The best strong-scaling result is `large_c2000000`, which improves from 3.407 s on one process to 0.480 s on 16 processes, a 7.10x speedup. The smaller cases still improve, but their efficiency drops because fixed costs such as record broadcast, gather, PNG writing, and MPI launch overhead become a larger fraction of total runtime.
+The best 64-process strong-scaling result is `large_c2000000`, which improves from 3.336 s on one process to 0.252 s on 64 processes, a 13.24x speedup. On a single local node, the same case improves to 0.284 s on 16 processes, an 11.75x speedup with 73.4% efficiency. The smaller cases still improve, but their efficiency drops because fixed costs such as record broadcast, gather, PNG writing, MPI launch overhead, and multi-node communication become a larger fraction of total runtime.
 
 ![Efficiency](figure/efficiency.png)
 
 ## Problem Size Per Process
 
-At 16 processes, throughput increases with larger scenes: 1.47 million circles/s for `imbalance_c100000`, 2.17 million circles/s for `medium_c200000`, 3.36 million circles/s for `large_c1000000`, 4.17 million circles/s for `large_c2000000`, and 4.65 million circles/s for `large_c4000000`. This is shown in `data/summary_16proc.csv` and `figure/problem_size_per_process.png`.
+At 64 processes, throughput increases with larger scenes: 1.54 million circles/s for `imbalance_c100000`, 2.22 million circles/s for `medium_c200000`, 6.54 million circles/s for `large_c1000000`, 7.94 million circles/s for `large_c2000000`, and 8.99 million circles/s for `large_c4000000`. This is shown in `data/summary_64proc.csv` and `figure/problem_size_per_process.png`.
 
 ![Problem size per process](figure/problem_size_per_process.png)
 
-The weak-scaling conclusion is mixed. More circles per process amortize fixed MPI and output costs, so throughput improves as the problem gets larger. However, wall time still grows from 0.298 s at 1M circles to 0.860 s at 4M circles on 16 processes because each process still loops over every circle and only skips pixels outside its owned rows. The algorithm scales well enough for strong scaling, but it is not true weak scaling because broadcast size and per-rank circle iteration both grow with total circle count.
+The weak-scaling conclusion is mixed. More circles per process amortize fixed MPI and output costs, so throughput improves as the problem gets larger. However, wall time still grows from 0.153 s at 1M circles to 0.445 s at 4M circles on 64 processes because each process still loops over every circle and only skips pixels outside its owned rows. The algorithm scales well enough for strong scaling, but it is not true weak scaling because broadcast size and per-rank circle iteration both grow with total circle count.
 
 ## Load Balance
 
@@ -80,12 +81,12 @@ The weak-scaling conclusion is mixed. More circles per process amortize fixed MP
 
 ![Render imbalance](figure/imbalance.png)
 
-The regular large cases are well balanced at 16 processes: `large_c2000000` has imbalance 1.11 and `large_c4000000` has imbalance 1.05. The cyclic row decomposition is effective here because each rank receives rows distributed across the full image instead of one contiguous vertical region.
+The regular large cases are reasonably balanced at 16 processes: `large_c2000000` has imbalance 1.23 and `large_c4000000` has imbalance 1.10. At 64 processes, the regular large cases remain controlled, with imbalance values from 1.27 to 1.48. The cyclic row decomposition is effective here because each rank receives rows distributed across the full image instead of one contiguous vertical region.
 
-The worst 16-process imbalance is `imbalance_c100000` at 1.34. This is expected because the case contains extremely large circles and a much smaller image, so some rows receive more work even after cyclic distribution. The imbalance is still controlled: the renderer continues to improve from 0.225 s on one process to 0.068 s on 16 processes.
+The worst 64-process imbalance is `imbalance_c100000` at 1.64. The special imbalance case contains extremely large circles and a much smaller image, so some rows receive more work even after cyclic distribution. The imbalance is still controlled: the renderer continues to improve from 0.165 s on one process to 0.065 s on 64 processes.
 
 ## Conclusion
 
-The MPI renderer is correct on all benchmarked test cases and shows useful strong scaling up to 16 local processes. The best measured result is 7.10x speedup and 44.4% efficiency on `large_c2000000`; the 4M-circle case reaches the highest throughput at 4.65 million circles/s but lower speedup because the one-process baseline is already more throughput-efficient for that large input.
+The MPI renderer is correct on all benchmarked test cases and shows useful strong scaling through the 64-process competition configuration. The best measured result is 13.24x speedup on `large_c2000000`; the 4M-circle case reaches the highest throughput at 8.99 million circles/s but lower speedup because the one-process baseline is already more throughput-efficient for that large input.
 
 The main performance limitation is that every rank still scans every circle record. This avoids ordering and compositing complexity and makes correctness straightforward, but it means broadcast and per-rank loop overhead grow with scene size. A future improvement would combine row decomposition with a spatial binning or circle-to-row-range index so each process skips circles that cannot affect any owned row, while preserving global back-to-front order for overlapping pixels.

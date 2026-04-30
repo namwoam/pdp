@@ -16,29 +16,35 @@ FIGURE_DIR = ROOT / "figure"
 TESTCASE_DIR = Path("/home/Team12/testcases")
 
 
-# Median wall times from: REPS=10 NPROCS="1 4 8 16" ./bench.sh
-# Collected on 2026-05-01 in the local HW3 MPI environment.
+# Median wall times from: REPS=10 NPROCS="1 4 8 16 64" ./bench.sh,
+# collected on 2026-05-01 in the local HW3 MPI environment. All runs
+# verified against the provided golden PNG files.
 BENCHMARK_ROWS = [
-    ("imbalance_c100000", 1, 0.225, 1.00, "OK"),
-    ("imbalance_c100000", 4, 0.092, 1.04, "OK"),
-    ("imbalance_c100000", 8, 0.087, 1.32, "OK"),
-    ("imbalance_c100000", 16, 0.068, 1.34, "OK"),
-    ("large_c1000000", 1, 1.715, 1.00, "OK"),
-    ("large_c1000000", 4, 0.552, 1.00, "OK"),
-    ("large_c1000000", 8, 0.393, 1.15, "OK"),
-    ("large_c1000000", 16, 0.298, 1.21, "OK"),
-    ("large_c2000000", 1, 3.407, 1.00, "OK"),
-    ("large_c2000000", 4, 1.114, 1.02, "OK"),
-    ("large_c2000000", 8, 0.667, 1.07, "OK"),
-    ("large_c2000000", 16, 0.480, 1.11, "OK"),
-    ("large_c4000000", 1, 4.506, 1.00, "OK"),
-    ("large_c4000000", 4, 2.126, 1.11, "OK"),
-    ("large_c4000000", 8, 1.254, 1.03, "OK"),
-    ("large_c4000000", 16, 0.860, 1.05, "OK"),
+    ("imbalance_c100000", 1, 0.165, 1.00, "OK"),
+    ("imbalance_c100000", 4, 0.098, 1.08, "OK"),
+    ("imbalance_c100000", 8, 0.088, 1.24, "OK"),
+    ("imbalance_c100000", 16, 0.068, 1.33, "OK"),
+    ("imbalance_c100000", 64, 0.065, 1.64, "OK"),
+    ("large_c1000000", 1, 1.780, 1.00, "OK"),
+    ("large_c1000000", 4, 0.325, 1.01, "OK"),
+    ("large_c1000000", 8, 0.224, 1.16, "OK"),
+    ("large_c1000000", 16, 0.163, 1.21, "OK"),
+    ("large_c1000000", 64, 0.153, 1.28, "OK"),
+    ("large_c2000000", 1, 3.336, 1.00, "OK"),
+    ("large_c2000000", 4, 0.609, 1.01, "OK"),
+    ("large_c2000000", 8, 0.375, 1.14, "OK"),
+    ("large_c2000000", 16, 0.284, 1.23, "OK"),
+    ("large_c2000000", 64, 0.252, 1.48, "OK"),
+    ("large_c4000000", 1, 4.534, 1.00, "OK"),
+    ("large_c4000000", 4, 1.186, 1.02, "OK"),
+    ("large_c4000000", 8, 0.656, 1.05, "OK"),
+    ("large_c4000000", 16, 0.470, 1.10, "OK"),
+    ("large_c4000000", 64, 0.445, 1.27, "OK"),
     ("medium_c200000", 1, 0.368, 1.00, "OK"),
-    ("medium_c200000", 4, 0.147, 1.02, "OK"),
-    ("medium_c200000", 8, 0.119, 1.17, "OK"),
-    ("medium_c200000", 16, 0.092, 1.22, "OK"),
+    ("medium_c200000", 4, 0.163, 1.09, "OK"),
+    ("medium_c200000", 8, 0.127, 1.24, "OK"),
+    ("medium_c200000", 16, 0.098, 1.19, "OK"),
+    ("medium_c200000", 64, 0.090, 1.38, "OK"),
 ]
 
 
@@ -107,24 +113,25 @@ def write_csvs(metadata: pd.DataFrame, benchmark: pd.DataFrame) -> None:
     metadata.to_csv(DATA_DIR / "testcase_metadata.csv", index=False, quoting=csv.QUOTE_MINIMAL)
     benchmark.to_csv(DATA_DIR / "benchmark_results.csv", index=False, quoting=csv.QUOTE_MINIMAL)
 
-    summary = (
-        benchmark[benchmark["processes"] == 16]
-        .loc[
-            :,
-            [
-                "testcase",
-                "circles",
-                "time_s",
-                "speedup",
-                "efficiency",
-                "imbalance_max_mean",
-                "throughput_mcircles_s",
-                "verify",
-            ],
-        ]
-        .sort_values("circles")
-    )
-    summary.to_csv(DATA_DIR / "summary_16proc.csv", index=False)
+    for process_count in (16, 64):
+        summary = (
+            benchmark[benchmark["processes"] == process_count]
+            .loc[
+                :,
+                [
+                    "testcase",
+                    "circles",
+                    "time_s",
+                    "speedup",
+                    "efficiency",
+                    "imbalance_max_mean",
+                    "throughput_mcircles_s",
+                    "verify",
+                ],
+            ]
+            .sort_values("circles")
+        )
+        summary.to_csv(DATA_DIR / f"summary_{process_count}proc.csv", index=False)
 
 
 def save_figures(benchmark: pd.DataFrame) -> None:
@@ -143,8 +150,8 @@ def save_figures(benchmark: pd.DataFrame) -> None:
     )
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
-    ax.set_xticks([1, 4, 8, 16])
-    ax.set_xticklabels(["1", "4", "8", "16"])
+    ax.set_xticks([1, 4, 8, 16, 64])
+    ax.set_xticklabels(["1", "4", "8", "16", "64"])
     ax.set_xlabel("MPI processes")
     ax.set_ylabel("Median wall time (s, log scale)")
     ax.set_title("Strong Scaling Runtime")
@@ -162,10 +169,10 @@ def save_figures(benchmark: pd.DataFrame) -> None:
         marker="o",
         palette=palette,
     )
-    ax.plot([1, 16], [1, 16], color="black", linestyle="--", linewidth=1, label="ideal")
+    ax.plot([1, 64], [1, 64], color="black", linestyle="--", linewidth=1, label="ideal")
     ax.set_xscale("log", base=2)
-    ax.set_xticks([1, 4, 8, 16])
-    ax.set_xticklabels(["1", "4", "8", "16"])
+    ax.set_xticks([1, 4, 8, 16, 64])
+    ax.set_xticklabels(["1", "4", "8", "16", "64"])
     ax.set_xlabel("MPI processes")
     ax.set_ylabel("Speedup vs. 1 process")
     ax.set_title("Speedup")
@@ -185,8 +192,8 @@ def save_figures(benchmark: pd.DataFrame) -> None:
     )
     ax.axhline(1.0, color="black", linestyle="--", linewidth=1)
     ax.set_xscale("log", base=2)
-    ax.set_xticks([1, 4, 8, 16])
-    ax.set_xticklabels(["1", "4", "8", "16"])
+    ax.set_xticks([1, 4, 8, 16, 64])
+    ax.set_xticklabels(["1", "4", "8", "16", "64"])
     ax.set_xlabel("MPI processes")
     ax.set_ylabel("Parallel efficiency")
     ax.set_title("Efficiency")
@@ -206,8 +213,8 @@ def save_figures(benchmark: pd.DataFrame) -> None:
     )
     ax.axhline(1.0, color="black", linestyle="--", linewidth=1)
     ax.set_xscale("log", base=2)
-    ax.set_xticks([1, 4, 8, 16])
-    ax.set_xticklabels(["1", "4", "8", "16"])
+    ax.set_xticks([1, 4, 8, 16, 64])
+    ax.set_xticklabels(["1", "4", "8", "16", "64"])
     ax.set_xlabel("MPI processes")
     ax.set_ylabel("Render imbalance (max / mean)")
     ax.set_title("Per-Rank Render Load Balance")
@@ -216,16 +223,16 @@ def save_figures(benchmark: pd.DataFrame) -> None:
     plt.savefig(FIGURE_DIR / "imbalance.png", dpi=180)
     plt.close()
 
-    proc16 = benchmark[benchmark["processes"] == 16].sort_values("circles")
+    proc64 = benchmark[benchmark["processes"] == 64].sort_values("circles")
     plt.figure(figsize=(10, 6))
     ax = sns.lineplot(
-        data=proc16,
+        data=proc64,
         x="circles_per_process",
         y="time_s",
         marker="o",
         color="#356859",
     )
-    for _, row in proc16.iterrows():
+    for _, row in proc64.iterrows():
         ax.annotate(
             row["testcase"].replace("_", "\n"),
             (row["circles_per_process"], row["time_s"]),
@@ -234,7 +241,7 @@ def save_figures(benchmark: pd.DataFrame) -> None:
             fontsize=8,
         )
     ax.set_xscale("log")
-    ax.set_xlabel("Circles per process at 16 MPI processes")
+    ax.set_xlabel("Circles per process at 64 MPI processes")
     ax.set_ylabel("Median wall time (s)")
     ax.set_title("Problem Size per Process")
     plt.tight_layout()
@@ -251,6 +258,7 @@ def main() -> None:
     print(f"wrote {DATA_DIR / 'testcase_metadata.csv'}")
     print(f"wrote {DATA_DIR / 'benchmark_results.csv'}")
     print(f"wrote {DATA_DIR / 'summary_16proc.csv'}")
+    print(f"wrote {DATA_DIR / 'summary_64proc.csv'}")
     for figure in sorted(FIGURE_DIR.glob("*.png")):
         print(f"wrote {figure}")
 

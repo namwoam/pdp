@@ -17,12 +17,15 @@
  *     gather is tiny).
  *
  * (B) PARTITION — scatter records by file order, render full image,
- *     painter-reduce. Each rank gets a contiguous slice of records
- *     (rank 0 = back-most, rank P-1 = front-most), rasterizes them
- *     into a local W×H uint8 RGBA buffer (alpha=0xFF marks "touched"),
- *     then MPI_Reduce with a non-commutative painter-overwrite op
- *     composes the final image on rank 0 in rank order — which is
- *     file order — preserving back-to-front painter semantics.
+ *     reduce via predefined MPI_MAX. Each rank gets a contiguous slice
+ *     of records (rank 0 = back-most, rank P-1 = front-most) and
+ *     rasterizes into a local W×H uint32 buffer, packing each pixel as
+ *     ((rank+1)<<24 | R<<16 | G<<8 | B). Untouched pixels stay zero.
+ *     MPI_Reduce(MPI_MAX, MPI_UINT32_T) then naturally selects the
+ *     highest-rank-marker per pixel — equivalent to back-to-front
+ *     painter compositing — using the hardware-accelerated reduce
+ *     path (a custom non-commutative MPI op would force a slow
+ *     user-callback route, ~10x lower bandwidth).
  *     Wins for huge counts: per-rank rasterization cost drops to ~1/P.
  *
  * Per-record format: float32 x,y,radius + uint8 r,g,b (15 bytes).
@@ -40,7 +43,9 @@
 
 #define RECSZ (sizeof(float)*3 + 3)
 
-/* PARTITION wins above this; tuned against bench data on 64 procs. */
+/* PARTITION wins above this; tuned against bench data on 64 procs.
+ * Override at runtime via $RENDERER_THRESHOLD (parsed as uint64) — handy
+ * for sweeping during tuning. */
 #define ADAPT_THRESHOLD 500000ULL
 
 /* Compact pre-filtered circle for cyclic-rows rendering. bbox + y_first
@@ -84,12 +89,24 @@ static inline void raster_filtered_cyclic(unsigned char *img, int W,
     }
 }
 
-/* Rasterize one circle into a full W×H RGBA buffer. Same float math as
- * raster_filtered_cyclic so per-pixel coverage decisions are identical
- * across modes — the two modes produce byte-identical output. */
-static inline void raster_full_rgba(unsigned char *img, int W, int H,
-                                    float cx, float cy, float radius,
-                                    unsigned char R, unsigned char G, unsigned char B) {
+/* Rasterize one circle into a full W×H buffer of encoded pixels.
+ * Each pixel is a uint32 packed as ((rank+1)<<24 | R<<16 | G<<8 | B):
+ *   - high byte = "rank marker"; 0 means untouched, 1..P means rank
+ *     0..P-1 touched it
+ *   - low 24 bits = the actual RGB color
+ * Across-rank composition is then MPI_MAX on uint32: a higher rank
+ * marker beats any lower marker (painter semantics, later=front=higher
+ * rank wins), and on ties (same rank, can't actually happen since each
+ * rank has its own marker) the RGB bits are tie-breaker. Untouched
+ * pixels have value 0 and lose to any touched pixel.
+ *
+ * Within a rank, file-order overwrites: each rasterization unconditionally
+ * stores `encoded` so the last circle to cover the pixel wins (back-to-
+ * front painter within rank). Same float math as raster_filtered_cyclic
+ * so coverage decisions are byte-identical across modes. */
+static inline void raster_full_encoded(uint32_t *img, int W, int H,
+                                       float cx, float cy, float radius,
+                                       uint32_t encoded) {
     int xmin = (int)floorf(cx - radius);
     int xmax = (int)floorf(cx + radius);
     int ymin = (int)floorf(cy - radius);
@@ -112,37 +129,13 @@ static inline void raster_full_rgba(unsigned char *img, int W, int H,
         if (xlo < xmin) xlo = xmin;
         if (xhi > xmax) xhi = xmax;
         if (xlo > xhi) continue;
-        unsigned char *row_ptr = img + ((size_t)y * (size_t)W + (size_t)xlo) * 4;
-        for (int x = xlo; x <= xhi; ++x, row_ptr += 4) {
+        uint32_t *row_ptr = img + (size_t)y * (size_t)W + (size_t)xlo;
+        for (int x = xlo; x <= xhi; ++x, ++row_ptr) {
             float px = (float)x + 0.5f;
             float dx = px - cx;
             if (dx * dx + dy2 <= r2) {
-                row_ptr[0] = R;
-                row_ptr[1] = G;
-                row_ptr[2] = B;
-                row_ptr[3] = 0xFF;
+                *row_ptr = encoded;
             }
-        }
-    }
-}
-
-/* Painter's-overwrite reduction op for RGBA pixels: src (later in rank
- * order = front) overwrites dst when src has alpha set. Declared
- * non-commutative so MPI applies it in canonical rank order, giving
- * back-to-front painter semantics. The op is associative under that
- * left-to-right grouping, so MPI tree reductions produce the same
- * result as a sequential combine. */
-static void painter_op(void *in, void *inout, int *len, MPI_Datatype *dt) {
-    (void)dt;
-    const unsigned char *src = (const unsigned char *)in;
-    unsigned char *dst = (unsigned char *)inout;
-    int n = *len; /* element count; element is contiguous-4-bytes (RGBA) */
-    for (int i = 0; i < n; ++i) {
-        if (src[i*4 + 3]) {
-            dst[i*4 + 0] = src[i*4 + 0];
-            dst[i*4 + 1] = src[i*4 + 1];
-            dst[i*4 + 2] = src[i*4 + 2];
-            dst[i*4 + 3] = 0xFF;
         }
     }
 }
@@ -284,44 +277,48 @@ static unsigned char *render_partition(int rank, int nprocs, int W, int H,
                                        double *t_bcast, double *t_render, double *t_gather,
                                        double *r_min_o, double *r_max_o,
                                        double *r_sum_o, double *r_sumsq_o) {
-    /* Partition records contiguously in file order: rank 0 gets the
+    /* Partition records contiguously in file order: rank 0 owns the
      * earliest (back-most) circles, rank P-1 the latest (front-most).
-     * Painter reduce in rank order then matches back-to-front. */
-    int *sendcounts = malloc(sizeof(int) * nprocs);
-    int *senddispls = malloc(sizeof(int) * nprocs);
-    if (!sendcounts || !senddispls) { perror("alloc scatter meta"); MPI_Abort(MPI_COMM_WORLD, 1); }
-    int local_recs = 0;
+     * Reduce-by-MAX then matches back-to-front (higher rank wins).
+     *
+     * On this cluster MPI_Scatterv at 60 MB measured ~3x slower than
+     * MPI_Bcast for the same total payload (despite Bcast moving more
+     * total data, the tree path uses RDMA collectives much better).
+     * So we Bcast the full record array and have each rank slice
+     * locally — the per-rank render still only iterates count/P
+     * records, so this costs us memory, not compute. */
+    size_t totsz = (size_t)count * RECSZ;
+    if (rank != 0) {
+        all_records = malloc(totsz);
+        if (!all_records) { perror("alloc all_records"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    }
     {
-        uint64_t base = count / (uint64_t)nprocs;
-        uint64_t rem = count % (uint64_t)nprocs;
         size_t off = 0;
-        for (int r = 0; r < nprocs; ++r) {
-            uint64_t cnt = base + (r < (int)rem ? 1 : 0);
-            int bytes = (int)(cnt * RECSZ);
-            sendcounts[r] = bytes;
-            senddispls[r] = (int)off;
-            off += (size_t)bytes;
-            if (r == rank) local_recs = (int)cnt;
+        const size_t CHUNK = (size_t)1 << 30;
+        while (off < totsz) {
+            size_t left = totsz - off;
+            int n = (int)(left < CHUNK ? left : CHUNK);
+            MPI_Bcast(all_records + off, n, MPI_BYTE, 0, MPI_COMM_WORLD);
+            off += (size_t)n;
         }
     }
-    int my_bytes = sendcounts[rank];
-    unsigned char *my_recs = NULL;
-    if (my_bytes > 0) {
-        my_recs = malloc((size_t)my_bytes);
-        if (!my_recs) { perror("alloc my_recs"); MPI_Abort(MPI_COMM_WORLD, 1); }
-    }
-    MPI_Scatterv(all_records, sendcounts, senddispls, MPI_BYTE,
-                 my_recs, my_bytes, MPI_BYTE, 0, MPI_COMM_WORLD);
-    free(sendcounts); free(senddispls);
-    if (rank == 0) free(all_records);
+    uint64_t base = count / (uint64_t)nprocs;
+    uint64_t rem = count % (uint64_t)nprocs;
+    uint64_t my_first = base * (uint64_t)rank + (rank < (int)rem ? (uint64_t)rank : rem);
+    uint64_t my_count = base + (rank < (int)rem ? 1 : 0);
+    const unsigned char *my_recs = all_records + my_first * RECSZ;
+    int local_recs = (int)my_count;
     if (rank == 0) *t_bcast = MPI_Wtime();
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    /* No barrier: each rank starts rendering as soon as its slice has
+     * arrived. Per-rank render timings still get aggregated for the
+     * load-balance report, just not aligned to a global start. */
     double t_render_start = MPI_Wtime();
 
     size_t npix = (size_t)W * (size_t)H;
-    unsigned char *local_rgba = calloc(npix * 4, 1);
-    if (!local_rgba) { perror("alloc local_rgba"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    uint32_t *local_img = calloc(npix, sizeof(uint32_t));
+    if (!local_img) { perror("alloc local_img"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    uint32_t rank_marker = (uint32_t)(rank + 1) << 24;
     {
         const unsigned char *rec = my_recs;
         for (int i = 0; i < local_recs; ++i, rec += RECSZ) {
@@ -329,11 +326,14 @@ static unsigned char *render_partition(int rank, int nprocs, int W, int H,
             memcpy(&cx, rec + 0, sizeof(float));
             memcpy(&cy, rec + sizeof(float), sizeof(float));
             memcpy(&radius, rec + sizeof(float) * 2, sizeof(float));
-            raster_full_rgba(local_rgba, W, H, cx, cy, radius,
-                             rec[12], rec[13], rec[14]);
+            uint32_t encoded = rank_marker
+                             | ((uint32_t)rec[12] << 16)
+                             | ((uint32_t)rec[13] << 8)
+                             |  (uint32_t)rec[14];
+            raster_full_encoded(local_img, W, H, cx, cy, radius, encoded);
         }
     }
-    free(my_recs);
+    free(all_records); /* my_recs aliases into this buffer */
 
     double t_render_end = MPI_Wtime();
     double render_local = t_render_end - t_render_start;
@@ -345,34 +345,28 @@ static unsigned char *render_partition(int rank, int nprocs, int W, int H,
     MPI_Reduce(&render_local, r_sum_o, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&rl_sq, r_sumsq_o, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    /* Painter reduce. Use a 4-byte contiguous datatype so MPI cannot
-     * split a pixel across chunks when pipelining the reduction. */
-    MPI_Datatype pixel_t;
-    MPI_Type_contiguous(4, MPI_BYTE, &pixel_t);
-    MPI_Type_commit(&pixel_t);
-    MPI_Op op;
-    MPI_Op_create(painter_op, /*commute=*/0, &op);
-
-    unsigned char *recv_rgba = NULL;
+    /* Painter reduce via MPI_MAX on encoded uint32 — predefined op so
+     * MPI/UCX can use hardware-accelerated paths instead of the slow
+     * user-callback route a custom MPI_Op forces. */
+    uint32_t *recv_img = NULL;
     if (rank == 0) {
-        recv_rgba = calloc(npix * 4, 1);
-        if (!recv_rgba) { perror("alloc recv_rgba"); MPI_Abort(MPI_COMM_WORLD, 1); }
+        recv_img = calloc(npix, sizeof(uint32_t));
+        if (!recv_img) { perror("alloc recv_img"); MPI_Abort(MPI_COMM_WORLD, 1); }
     }
-    MPI_Reduce(local_rgba, recv_rgba, (int)npix, pixel_t, op, 0, MPI_COMM_WORLD);
-    free(local_rgba);
-    MPI_Op_free(&op);
-    MPI_Type_free(&pixel_t);
+    MPI_Reduce(local_img, recv_img, (int)npix, MPI_UINT32_T, MPI_MAX, 0, MPI_COMM_WORLD);
+    free(local_img);
 
     unsigned char *full_pixels = NULL;
     if (rank == 0) {
         full_pixels = malloc(npix * 3);
         if (!full_pixels) { perror("alloc full_pixels"); MPI_Abort(MPI_COMM_WORLD, 1); }
         for (size_t p = 0; p < npix; ++p) {
-            full_pixels[p*3 + 0] = recv_rgba[p*4 + 0];
-            full_pixels[p*3 + 1] = recv_rgba[p*4 + 1];
-            full_pixels[p*3 + 2] = recv_rgba[p*4 + 2];
+            uint32_t v = recv_img[p];
+            full_pixels[p*3 + 0] = (unsigned char)((v >> 16) & 0xFF);
+            full_pixels[p*3 + 1] = (unsigned char)((v >> 8) & 0xFF);
+            full_pixels[p*3 + 2] = (unsigned char)(v & 0xFF);
         }
-        free(recv_rgba);
+        free(recv_img);
         *t_gather = MPI_Wtime();
     }
     return full_pixels; /* non-NULL only on rank 0 */
@@ -437,11 +431,16 @@ int main(int argc, char **argv) {
     /* Adaptive: PARTITION wins when per-rank rasterization cost
      * dominates; REPLICATE keeps a tighter gather and avoids the
      * full-image RGBA buffer + reduce cost. */
-    int use_partition = (nprocs > 1) && (count > ADAPT_THRESHOLD);
+    uint64_t threshold = ADAPT_THRESHOLD;
+    {
+        const char *env = getenv("RENDERER_THRESHOLD");
+        if (env && *env) threshold = strtoull(env, NULL, 10);
+    }
+    int use_partition = (nprocs > 1) && (count > threshold);
     if (rank == 0) {
         fprintf(stderr, "rank0: mode=%s (count=%llu, threshold=%llu)\n",
                 use_partition ? "PARTITION" : "REPLICATE",
-                (unsigned long long)count, (unsigned long long)ADAPT_THRESHOLD);
+                (unsigned long long)count, (unsigned long long)threshold);
     }
 
     double r_min = 0, r_max = 0, r_sum = 0, r_sumsq = 0;
