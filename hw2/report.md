@@ -25,15 +25,25 @@ The generated data and figures are stored in:
 
 ## Implementation
 
-The final MPI strategy is cyclic row decomposition. Rank `r` owns image rows `r, r + P, r + 2P, ...`, where `P` is the number of MPI processes. Rank 0 reads the CRDR file, broadcasts the header and all circle records, and each rank rasterizes every circle only into its owned rows. At the end, `MPI_Gatherv` collects compact local row slices and rank 0 re-interleaves them into the final PNG.
+The final MPI renderer selects between two strategies at runtime based on the circle count. Scenes with 500,000 or fewer circles use **Mode A (REPLICATE)**; scenes above that threshold use **Mode B (PARTITION)**. The threshold was tuned empirically against benchmark data at 64 processes and can be overridden via the `RENDERER_THRESHOLD` environment variable.
 
-The main optimizations are:
+### Mode A: REPLICATE (cyclic row decomposition)
 
-- Cyclic row ownership instead of contiguous row blocks, which avoids severe spatial imbalance when circles cluster in one image region.
-- Direct opaque RGB writes instead of alpha compositing, matching the assignment format where records have only `uint8 r, g, b`.
-- Per-row analytic x-range trimming using `sqrtf`, followed by the exact circle-inside test for correctness.
-- Local compact row buffers, so each process stores only its assigned rows instead of a full image.
-- In-source GCC optimization pragmas because the official compile command uses `mpicc renderer_mpi.c -o renderer_mpi -lm -march=native` without an explicit `-O` flag.
+Rank 0 reads the CRDR file and broadcasts all circle records to every rank. Each rank owns a cyclic stripe of image rows: rank `r` owns rows `r, r+P, r+2P, ...`, where `P` is the number of processes. Before rasterizing, each rank prefilters the full record list to retain only circles whose bounding-box y-range intersects its owned rows; the prefiltered list caches the bounding box and the first owned row (`y_first`) so the inner raster loop is branch-free with respect to ownership. Each rank rasterizes into a compact `W × local_rows` RGB buffer. At the end, `MPI_Gatherv` collects compact slices and rank 0 re-interleaves them into the final image.
+
+Cyclic row ownership spreads work evenly across ranks even when circles cluster in one vertical region, which a contiguous block assignment cannot guarantee. The compact per-rank buffer avoids allocating a full `W × H` image on every process, which matters when P is large.
+
+### Mode B: PARTITION (record partitioning with painter reduce)
+
+Rank 0 reads and broadcasts the full record array (Scatterv was measured to be approximately 3x slower than Bcast on this cluster for equivalent payloads, so Bcast is used in both modes). Each rank then slices the record array locally: rank `r` owns a contiguous chunk of `count/P` consecutive records in file order, with rank 0 holding the earliest (back-most) circles and rank `P-1` holding the latest (front-most) circles. Each rank rasterizes its own records into a full `W × H` buffer of `uint32` encoded pixels, where each pixel is packed as `((rank+1) << 24 | R << 16 | G << 8 | B)`. Untouched pixels remain zero. `MPI_Reduce` with `MPI_MAX` across all ranks then selects the correct color per pixel: a higher rank marker means a circle drawn later (closer to the front) wins, exactly matching the back-to-front painter semantics. Using a predefined `MPI_MAX` operation on `MPI_UINT32_T` instead of a custom non-commutative `MPI_Op` keeps the reduction on the hardware-accelerated collective path.
+
+This mode reduces per-rank rasterization cost to approximately `1/P` of the serial work, at the cost of a `W × H × 4` byte full-image buffer on each rank and a reduction across all pixels.
+
+### Common optimizations
+
+- Per-row analytic x-range trimming using `sqrtf`, followed by the exact circle-inside test, avoids iterating over pixels clearly outside the circle.
+- Direct opaque RGB writes match the assignment format where records contain only `uint8 r, g, b` with no alpha.
+- In-source `#pragma GCC optimize("O3", "unroll-loops")` because the official compile command uses no explicit `-O` flag.
 
 ## Test Cases
 
@@ -81,12 +91,12 @@ The weak-scaling conclusion is mixed. More circles per process amortize fixed MP
 
 ![Render imbalance](figure/imbalance.png)
 
-The regular large cases are reasonably balanced at 16 processes: `large_c2000000` has imbalance 1.23 and `large_c4000000` has imbalance 1.10. At 64 processes, the regular large cases remain controlled, with imbalance values from 1.27 to 1.48. The cyclic row decomposition is effective here because each rank receives rows distributed across the full image instead of one contiguous vertical region.
+The three large scenes (`large_c1000000`, `large_c2000000`, `large_c4000000`) use Mode B (PARTITION). In this mode each rank renders a disjoint slice of records into a full image, so imbalance reflects circle-count variance across ranks. Since records are split evenly, imbalance arises from radius variation rather than spatial clustering. At 16 processes the imbalance is 1.21, 1.23, and 1.10 respectively; at 64 processes it is 1.28, 1.48, and 1.27. The values are controlled because the large scenes use uniformly sized circles (max radius 20 pixels).
 
-The worst 64-process imbalance is `imbalance_c100000` at 1.64. The special imbalance case contains extremely large circles and a much smaller image, so some rows receive more work even after cyclic distribution. The imbalance is still controlled: the renderer continues to improve from 0.165 s on one process to 0.065 s on 64 processes.
+The two smaller scenes (`imbalance_c100000`, `medium_c200000`) use Mode A (REPLICATE). In this mode each rank rasterizes prefiltered circles into its cyclic row stripe, so imbalance reflects whether very large circles disproportionately cover certain rows. At 64 processes, `medium_c200000` has imbalance 1.38 and the `imbalance_c100000` case has the highest imbalance at 1.64. The special imbalance case contains circles with radii up to 1998 pixels in a 320x240 image, meaning a single circle can span almost the full image height. Cyclic row distribution spreads that coverage across all ranks rather than concentrating it in one contiguous block, which is why imbalance stays below 2x despite the extreme radius variation. Even with this imbalance, wall time still improves from 0.165 s at one process to 0.065 s at 64 processes.
 
 ## Conclusion
 
-The MPI renderer is correct on all benchmarked test cases and shows useful strong scaling through the 64-process competition configuration. The best measured result is 13.24x speedup on `large_c2000000`; the 4M-circle case reaches the highest throughput at 8.99 million circles/s but lower speedup because the one-process baseline is already more throughput-efficient for that large input.
+The MPI renderer is correct on all benchmarked test cases and shows useful strong scaling through the 64-process competition configuration. The adaptive strategy, switching from cyclic row decomposition (Mode A) at smaller scene sizes to record partitioning with a painter reduce (Mode B) at larger scene sizes, gives good scaling across both regimes. The best measured result is 13.24x speedup on `large_c2000000` (Mode B); the 4M-circle case reaches the highest throughput at 8.99 million circles/s.
 
-The main performance limitation is that every rank still scans every circle record. This avoids ordering and compositing complexity and makes correctness straightforward, but it means broadcast and per-rank loop overhead grow with scene size. A future improvement would combine row decomposition with a spatial binning or circle-to-row-range index so each process skips circles that cannot affect any owned row, while preserving global back-to-front order for overlapping pixels.
+The main cost in Mode A is that every rank scans all records during prefiltering, so broadcast size and prefilter time grow with total circle count regardless of P. Mode B addresses this by giving each rank only count/P records to rasterize, but trades it for a full-image `uint32` buffer per rank and a pixel-level `MPI_MAX` reduction. The threshold of 500,000 circles was chosen where the reduction overhead in Mode B becomes cheaper than the per-rank prefilter scan cost in Mode A at 64 processes.
