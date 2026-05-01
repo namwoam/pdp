@@ -51,7 +51,7 @@ This mode reduces the per-rank rasterization cost to approximately \(1/P\) of th
 The implementation applies per-row analytic \(x\)-range trimming with \texttt{sqrtf}, followed by the exact circle-inside test, to avoid iterating over pixels that are clearly outside the circle. The renderer writes opaque RGB values directly, which matches the assignment format in which records contain only \texttt{uint8\_t} red, green, and blue components. The source also uses \texttt{\#pragma GCC optimize("O3", "unroll-loops")} because the spec's compiling command does not specify an explicit optimization flag.
 
 \section{Test Cases}
-The binary metadata in \texttt{data/testcase\_metadata.csv} shows that the large cases use a 640\,$\times$\,480 image with 1M, 2M, and 4M circles. Table~\ref{tab:testcases} summarizes the benchmark inputs. The special \texttt{imbalance\_c100000} case is smaller, using a 320\,$\times$\,240 image with 100K circles, but it has much larger radius variation. Its maximum radius is approximately 1998 pixels, compared with roughly 20 pixels for the regular large cases. This makes the case suitable for stressing load balance.
+The metadata shows that the large cases use a 640\,$\times$\,480 image with 1M, 2M, and 4M circles. Table~\ref{tab:testcases} summarizes the benchmark inputs. The special \texttt{imbalance\_c100000} case is smaller, using a 320\,$\times$\,240 image with 100K circles, but it has much larger radius variation. Its maximum radius is approximately 1998 pixels, compared with roughly 20 pixels for the regular large cases. This makes the case suitable for stressing load balance.
 
 \begin{table}[htbp]
 \centering
