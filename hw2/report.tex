@@ -124,7 +124,7 @@ At 64 processes, throughput increases with larger scenes: 1.54 million circles p
 The weak-scaling conclusion is mixed. More circles per process amortize fixed MPI and output costs, so throughput improves as the problem grows. However, wall time still increases from 0.153 s at 1M circles to 0.445 s at 4M circles on 64 processes because each process still loops over every circle and skips only the pixels outside its owned rows. The algorithm scales well for strong scaling, but it is not true weak scaling because both broadcast size and per-rank circle iteration grow with total circle count.
 
 \section{Load Balance}
-The renderer logs per-rank render time statistics and reports imbalance as \(\max / \mathrm{mean}\). The measured imbalance values are recorded in \texttt{data/benchmark\_results.csv} and plotted in \texttt{figure/imbalance.png}.
+The renderer logs per-rank render time statistics and reports imbalance as \(\max / \mathrm{mean}\). The measured imbalance values are recorded in plotted in Figure ~\ref{fig:imbalance}.
 
 \begin{figure}[htbp]
 \centering
