@@ -29,25 +29,10 @@
 \section{Environment}
 The experiments were conducted on Ubuntu 24.04.1 LTS running Linux kernel 6.8.0-100-generic. The host system used an Intel Xeon Platinum 8352V processor at 2.10 GHz with a topology of 2 sockets, 36 cores per socket, 2 threads per core, and 2 NUMA nodes. The MPI runtime was Open MPI 4.1.6, and the compiler was \texttt{mpicc} backed by GCC 13.3.0.
 
-\begin{table}[H]
-\centering
-\caption{Experimental configuration used for benchmarking.}
-\label{tab:environment}
-\resizebox{\linewidth}{!}{%
-\begin{tabular}{ll}
-\toprule
-Setting & Value \\
-\midrule
-Build command & \texttt{mpicc renderer\_mpi.c -o renderer\_mpi -lm -march=native} \\
-Process counts & 1, 4, 8, 16, 64 \\
-Single-node limit & Up to 16 MPI processes \\
-64-process configuration & 4 nodes with 16 processes per node via \texttt{hosts} \\
-Reported time & Median of 10 runs \\
-Timing definition & Total wall time printed by \texttt{renderer\_mpi} \\
-\bottomrule
-\end{tabular}
-}
-\end{table}
+The experimental configuration used for benchmarking is summarized as follows: We measured performance using MPI process
+counts of 1, 4, 8, 16, and 64; single-node experiments used up to 16 processes, while the 64-process runs were
+executed across four nodes with 16 processes per node (via the \texttt{hosts} file). Reported timings are the
+median of 10 runs and correspond to the total wall time printed by \texttt{renderer\_mpi}.
 
 \section{Implementation}
 The final MPI renderer selects between two strategies at runtime according to the number of circles. Scenes with 500{,}000 circles or fewer use Mode A, named REPLICATE, whereas scenes above that threshold use Mode B, named PARTITION. The threshold was tuned empirically against benchmark data at 64 processes and can be overridden through the \texttt{RENDERER\_THRESHOLD} environment variable.
