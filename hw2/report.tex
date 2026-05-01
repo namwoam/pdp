@@ -152,15 +152,14 @@ Let \(N\) be the number of circles, \(W\) and \(H\) be the image width and heigh
 \begin{table}[htbp]
 \centering
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{lcc}
+\begin{tabular}{llcc}
 \toprule
-Quantity & Mode A: REPLICATE & Mode B: PARTITION \\
+Property & Type & Mode A: REPLICATE & Mode B: PARTITION \\
 \midrule
-Input records per rank & \(O(N)\) & \(O(N)\) \\
-Raster work per rank & \(O(N + S/P)\) & \(O(N/P + S/P)\) \\
-Image memory per rank & \(O(WH/P)\) & \(O(WH)\) \\
-Final collective & \(O(WH)\) gather total & \(O(WH)\) reduce per rank \\
-Preferred regime & \(N \le T\) & \(N > T\) \\
+Input records per rank & Space & \(O(N)\) & \(O(N)\) \\
+Raster work per rank & Time & \(O(N + S/P)\) & \(O(N/P + S/P)\) \\
+Image memory per rank & Space & \(O(WH/P)\) & \(O(WH)\) \\
+Final collective & Time & \(O(WH)\) & \(O(PWH)\) \\
 \bottomrule
 \end{tabular}
 }
@@ -168,9 +167,11 @@ Preferred regime & \(N \le T\) & \(N > T\) \\
 \label{tab:complexity}
 \end{table}
 
-Table~\ref{tab:complexity} summarizes the asymptotic tradeoffs, where \(T\) is the runtime threshold used to choose between modes. In Mode A, every rank receives and scans all \(N\) circle records, so the broadcast and prefiltering cost is \(O(N)\) per rank. Rasterization is divided by cyclic image rows; under balanced coverage, each rank renders about \(O(S/P)\) pixels, although very large or clustered circles can increase the slowest-rank cost. The compact local image buffer requires \(O(WH/P)\) memory per rank, plus \(O(N)\) input storage and prefiltered metadata. The final gather communicates \(O(WH)\) total image data to rank 0.
+Table~\ref{tab:complexity} summarizes the asymptotic tradeoffs, where \(T\) is the runtime threshold used to choose between modes. For both modes, every rank receives and scans all \(N\) circle records, so the broadcast and prefiltering cost is \(O(N)\) per rank. In Mode A, rasterization is divided by cyclic image rows; under balanced coverage, each rank renders about \(O(S/P)\) pixels, although very large or clustered circles can increase the slowest-rank cost. The compact local image buffer requires \(O(WH/P)\) memory per rank, plus \(O(N)\) input storage and prefiltered metadata. The final gather communicates \(O(WH)\) total image data to rank 0.
 
-In Mode B, each rank still receives the full input array, but rasterizes only \(O(N/P)\) records. Its rasterization work is therefore \(O(N/P + S/P)\) when circle areas are evenly distributed across record chunks. The tradeoff is memory and reduction cost: every rank keeps a full packed image buffer, so per-rank image memory is \(O(WH)\), and the \texttt{MPI\_Reduce} over pixels communicates and combines \(O(WH)\) values per rank up to collective implementation constants. This explains why Mode B is better for large \(N\), while Mode A is preferable when the full-image reduction would dominate the smaller amount of raster work.
+In Mode B, each rank still receives the full input array, but rasterizes only \(O(N/P)\) records. Its rasterization work is therefore \(O(N/P + S/P)\) when circle areas are evenly distributed across record chunks. The tradeoff is memory and reduction cost: every rank keeps a full packed image buffer, so per-rank image memory is \(O(WH)\), and the \texttt{MPI\_Reduce} over pixels takes \(O(WH)\) values from each of the \(P\) ranks, or \(O(PWH)\) total element work before collective implementation constants.
+
+The selection rule follows from this tradeoff. Mode A should be used for smaller inputs, \(N \le T\), because it avoids the full-image reduction and keeps per-rank image memory at \(O(WH/P)\). Mode B should be used for larger inputs, \(N > T\), because reducing raster work from \(O(N)\) to \(O(N/P)\) per rank outweighs the extra \(O(WH)\) image memory per rank and the \(O(PWH)\) final reduction.
 
 \section{Conclusion}
 The MPI renderer is correct on all benchmarked test cases and demonstrates meaningful strong scaling under the 64-process competition configuration. The adaptive strategy, which switches from cyclic row decomposition in Mode A for smaller scene sizes to record partitioning with a painter reduction in Mode B for larger scene sizes, provides good performance across both regimes. The best measured result is a 13.24\(\times\) speedup on \path{large_c2000000} under Mode B, while the 4M-circle case achieves the highest throughput at 8.99 million circles per second.
