@@ -51,12 +51,10 @@ This mode reduces the per-rank rasterization cost to approximately \(1/P\) of th
 The implementation applies per-row analytic \(x\)-range trimming with \texttt{sqrtf}, followed by the exact circle-inside test, to avoid iterating over pixels that are clearly outside the circle. The renderer writes opaque RGB values directly, which matches the assignment format in which records contain only \texttt{uint8\_t} red, green, and blue components. The source also uses \texttt{\#pragma GCC optimize("O3", "unroll-loops")} because the official compile command does not specify an explicit optimization flag.
 
 \section{Test Cases}
-The binary metadata in \texttt{data/testcase\_metadata.csv} shows that the large cases use a 640\,$\times$\,480 image with 1M, 2M, and 4M circles. The special \texttt{imbalance\_c100000} case is smaller, using a 320\,$\times$\,240 image with 100K circles, but it has much larger radius variation. Its maximum radius is approximately 1998 pixels, compared with roughly 20 pixels for the regular large cases. This makes the case suitable for stressing load balance.
+The binary metadata in \texttt{data/testcase\_metadata.csv} shows that the large cases use a 640\,$\times$\,480 image with 1M, 2M, and 4M circles. Table~\ref{tab:testcases} summarizes the benchmark inputs. The special \texttt{imbalance\_c100000} case is smaller, using a 320\,$\times$\,240 image with 100K circles, but it has much larger radius variation. Its maximum radius is approximately 1998 pixels, compared with roughly 20 pixels for the regular large cases. This makes the case suitable for stressing load balance.
 
-\begin{table}[t]
+\begin{table}[htbp]
 \centering
-\caption{Summary of benchmark test cases.}
-\label{tab:testcases}
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{lrrrr}
 \toprule
@@ -70,29 +68,37 @@ Testcase & Circles & Image & Mean radius & Max radius \\
 \bottomrule
 \end{tabular}
 }
+\caption{Summary of benchmark test cases.}
+\label{tab:testcases}
 \end{table}
 
 \section{Benchmark Results}
-The benchmark uses the median wall time across 10 repetitions for each testcase and process-count pair. The one-process MPI run serves as the serial baseline for speedup and efficiency because it exercises the same optimized renderer with \(P=1\).
+The benchmark uses the median wall time across 10 repetitions for each testcase and process-count pair, with the aggregate results listed in Table~\ref{tab:benchmarks}. The one-process MPI run serves as the serial baseline for speedup and efficiency because it exercises the same optimized renderer with \(P=1\).
 
-\begin{figure}[t]
+\begin{figure}[htbp]
 \centering
-\includegraphics[width=0.9\linewidth]{figure/strong_scaling_runtime.png}
+\begin{minipage}{0.32\linewidth}
+\centering
+\includegraphics[width=\linewidth]{figure/strong_scaling_runtime.png}
 \caption{Strong-scaling runtime across process counts.}
 \label{fig:runtime}
-\end{figure}
-
-\begin{figure}[t]
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
 \centering
-\includegraphics[width=0.9\linewidth]{figure/speedup.png}
+\includegraphics[width=\linewidth]{figure/speedup.png}
 \caption{Speedup across process counts.}
 \label{fig:speedup}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\includegraphics[width=\linewidth]{figure/efficiency.png}
+\caption{Parallel efficiency across process counts.}
+\label{fig:efficiency}
+\end{minipage}
 \end{figure}
 
-\begin{table}[t]
+\begin{table}[htbp]
 \centering
-\caption{Median runtime, speedup, and efficiency for each testcase.}
-\label{tab:benchmarks}
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{lrrrrrrr}
 \toprule
@@ -106,37 +112,34 @@ Testcase & 1 proc (s) & 4 proc (s) & 8 proc (s) & 16 proc (s) & 64 proc (s) & 64
 \bottomrule
 \end{tabular}
 }
+\caption{Median runtime, speedup, and efficiency for each testcase.}
+\label{tab:benchmarks}
 \end{table}
 
 The best 64-process strong-scaling result is \texttt{large\_c2000000}, which improves from 3.336 s on one process to 0.252 s on 64 processes, corresponding to a 13.24\(\times\) speedup. On a single local node, the same case improves to 0.284 s on 16 processes, which is an 11.75\(\times\) speedup with 73.4\% efficiency. The smaller cases still improve, but their efficiency declines because fixed costs such as record broadcast, gather, PNG writing, MPI launch overhead, and multi-node communication occupy a larger share of total runtime.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.9\linewidth]{figure/efficiency.png}
-\caption{Parallel efficiency across process counts.}
-\label{fig:efficiency}
-\end{figure}
-
 \section{Problem Size Per Process}
 At 64 processes, throughput increases with larger scenes: 1.54 million circles per second for \texttt{imbalance\_c100000}, 2.22 million circles per second for \texttt{medium\_c200000}, 6.54 million circles per second for \texttt{large\_c1000000}, 7.94 million circles per second for \texttt{large\_c2000000}, and 8.99 million circles per second for \texttt{large\_c4000000}. These values are reflected in \texttt{data/summary\_64proc.csv} and \texttt{figure/problem\_size\_per\_process.png}.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.9\linewidth]{figure/problem_size_per_process.png}
-\caption{Throughput as a function of problem size at 64 processes.}
-\label{fig:problem-size}
-\end{figure}
 
 The weak-scaling conclusion is mixed. More circles per process amortize fixed MPI and output costs, so throughput improves as the problem grows. However, wall time still increases from 0.153 s at 1M circles to 0.445 s at 4M circles on 64 processes because each process still loops over every circle and skips only the pixels outside its owned rows. The algorithm scales well for strong scaling, but it is not true weak scaling because both broadcast size and per-rank circle iteration grow with total circle count.
 
 \section{Load Balance}
 The renderer logs per-rank render time statistics and reports imbalance as \(\max / \mathrm{mean}\). The measured imbalance values are recorded in \texttt{data/benchmark\_results.csv} and plotted in \texttt{figure/imbalance.png}.
 
-\begin{figure}[t]
+\begin{figure}[htbp]
 \centering
-\includegraphics[width=0.9\linewidth]{figure/imbalance.png}
+\begin{minipage}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{figure/problem_size_per_process.png}
+\caption{Throughput as a function of problem size at 64 processes.}
+\label{fig:problem-size}
+\end{minipage}\hfill
+\begin{minipage}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{figure/imbalance.png}
 \caption{Per-rank render imbalance across benchmark cases.}
 \label{fig:imbalance}
+\end{minipage}
 \end{figure}
 
 The three large scenes, namely \texttt{large\_c1000000}, \texttt{large\_c2000000}, and \texttt{large\_c4000000}, use Mode B. In this mode each rank renders a disjoint slice of records into a full image, so imbalance reflects variation in circle counts across ranks. Because records are split evenly, imbalance arises from radius variation rather than spatial clustering. At 16 processes the imbalance is 1.21, 1.23, and 1.10 respectively, and at 64 processes it is 1.28, 1.48, and 1.27. These values remain controlled because the large scenes use uniformly sized circles with a maximum radius of 20 pixels.
