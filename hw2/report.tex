@@ -26,13 +26,6 @@
 
 \maketitle
 
-\section{Summary}
-This project implements the required CRDR circle renderer in \texttt{renderer.c} and the optimized MPI implementation in \texttt{renderer\_mpi.c}. The final MPI renderer preserves the file-order semantics specified in \texttt{spec.pdf}: circles are stored back to front, so rendering records in input order ensures that later circles overwrite earlier circles exactly.
-
-All benchmarked outputs were byte-identical to the provided golden PNG files. The benchmark data used in this report were generated with the commands \path{REPS=10 NPROCS="1 4 8 16 64" ./bench.sh} and \path{poetry run python scripts/generate_report_assets.py}.
-
-The generated data and figures are stored in \path{data/testcase_metadata.csv}, \path{data/benchmark_results.csv}, \path{data/summary_16proc.csv}, \path{data/summary_64proc.csv}, \path{figure/strong_scaling_runtime.png}, \path{figure/speedup.png}, \path{figure/efficiency.png}, \path{figure/imbalance.png}, and \path{figure/problem_size_per_process.png}.
-
 \section{Environment}
 The experiments were conducted on Ubuntu 24.04.1 LTS running Linux kernel 6.8.0-100-generic. The host system used an Intel Xeon Platinum 8352V processor at 2.10 GHz with a topology of 2 sockets, 36 cores per socket, 2 threads per core, and 2 NUMA nodes. The MPI runtime was Open MPI 4.1.6, and the compiler was \texttt{mpicc} backed by GCC 13.3.0.
 
