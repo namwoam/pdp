@@ -6,6 +6,11 @@ vars:
   TESTCASE_DIR: testcases
 
 tasks:
+  compile-report:
+    cmds:
+    - /Library/TeX/texbin/xelatex -interaction=nonstopmode -halt-on-error -file-line-error report.tex
+    - /Library/TeX/texbin/xelatex -interaction=nonstopmode -halt-on-error -file-line-error report.tex
+    desc: "Compile report.tex to report.pdf with MacTeX"
   download-testcases:
     desc: Download homework 2 testcases with gdown and extract them when possible
     cmds:

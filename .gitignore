@@ -61,3 +61,5 @@ dkms.conf
 # latex intermediate files
 *.aux
 *.log
+
+.venv/
