@@ -73,7 +73,7 @@ Testcase & Circles & Image & Mean radius & Max radius \\
 \end{table}
 
 \section{Benchmark Results}
-The benchmark uses the median wall time across 10 repetitions for each testcase and process-count pair, with the aggregate results listed in Table~\ref{tab:benchmarks}. The one-process MPI run serves as the serial baseline for speedup and efficiency because it exercises the same optimized renderer with \(P=1\).
+The benchmark uses the median wall time across 10 repetitions for each testcase and process-count pair, with the aggregate results listed in Table~\ref{tab:benchmarks}. The runtime, speedup, and efficiency trends are plotted in Figure~\ref{fig:runtime}, Figure~\ref{fig:speedup}, and Figure~\ref{fig:efficiency}. The one-process MPI run serves as the serial baseline for speedup and efficiency because it exercises the same optimized renderer with \(P=1\).
 
 \begin{figure}[htbp]
 \centering
@@ -119,12 +119,12 @@ Testcase & 1 proc (s) & 4 proc (s) & 8 proc (s) & 16 proc (s) & 64 proc (s) & 64
 The best 64-process strong-scaling result is \texttt{large\_c2000000}, which improves from 3.336 s on one process to 0.252 s on 64 processes, corresponding to a 13.24\(\times\) speedup. On a single local node, the same case improves to 0.284 s on 16 processes, which is an 11.75\(\times\) speedup with 73.4\% efficiency. The smaller cases still improve, but their efficiency declines because fixed costs such as record broadcast, gather, PNG writing, MPI launch overhead, and multi-node communication occupy a larger share of total runtime.
 
 \section{Problem Size Per Process}
-At 64 processes, throughput increases with larger scenes: 1.54 million circles per second for \texttt{imbalance\_c100000}, 2.22 million circles per second for \texttt{medium\_c200000}, 6.54 million circles per second for \texttt{large\_c1000000}, 7.94 million circles per second for \texttt{large\_c2000000}, and 8.99 million circles per second for \texttt{large\_c4000000}.
+At 64 processes, throughput increases with larger scenes, as shown in Figure~\ref{fig:problem-size}: 1.54 million circles per second for \texttt{imbalance\_c100000}, 2.22 million circles per second for \texttt{medium\_c200000}, 6.54 million circles per second for \texttt{large\_c1000000}, 7.94 million circles per second for \texttt{large\_c2000000}, and 8.99 million circles per second for \texttt{large\_c4000000}.
 
-The weak-scaling conclusion is mixed. More circles per process amortize fixed MPI and output costs, so throughput improves as the problem grows. However, wall time still increases from 0.153 s at 1M circles to 0.445 s at 4M circles on 64 processes because each process still loops over every circle and skips only the pixels outside its owned rows. The algorithm scales well for strong scaling, but it is not true weak scaling because both broadcast size and per-rank circle iteration grow with total circle count.
+With 64 processes, the workload grows from 15{,}625 circles per process for \texttt{large\_c1000000} to 62{,}500 circles per process for \texttt{large\_c4000000}. Throughput improves from 6.54 to 8.99 million circles per second because fixed MPI and output costs are amortized over more circles, but runtime still rises from 0.153 s to 0.445 s. The larger cases are faster per circle, but they still take longer overall.
 
 \section{Load Balance}
-The renderer logs per-rank render time statistics and reports imbalance as \(\max / \mathrm{mean}\). The measured imbalance values are recorded in plotted in Figure ~\ref{fig:imbalance}.
+The renderer logs per-rank render time statistics and reports imbalance as \(\max / \mathrm{mean}\). The measured imbalance values are plotted in Figure~\ref{fig:imbalance}.
 
 \begin{figure}[htbp]
 \centering
