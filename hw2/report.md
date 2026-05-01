@@ -23,6 +23,23 @@ The generated data and figures are stored in:
 - `figure/imbalance.png`
 - `figure/problem_size_per_process.png`
 
+## Environment
+
+- OS: Ubuntu 24.04.1 LTS, Linux kernel 6.8.0-100-generic
+- CPU: Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz
+- Topology: 2 sockets, 36 cores/socket, 2 threads/core, 2 NUMA nodes
+- MPI runtime: Open MPI 4.1.6
+- Compiler: `mpicc` using GCC 13.3.0
+
+### Experiment Settings
+
+- Build command: `mpicc renderer_mpi.c -o renderer_mpi -lm -march=native`
+- Process counts tested: 1, 4, 8, 16, 64
+- Single-node runs use up to 16 MPI processes.
+- The 64-process run uses 4 nodes with 16 processes per node through the `hosts` hostfile.
+- Each point reports the median of 10 runs.
+- Reported times are the total wall times printed by `renderer_mpi`, including MPI communication and image output.
+
 ## Implementation
 
 The final MPI renderer selects between two strategies at runtime based on the circle count. Scenes with 500,000 or fewer circles use **Mode A (REPLICATE)**; scenes above that threshold use **Mode B (PARTITION)**. The threshold was tuned empirically against benchmark data at 64 processes and can be overridden via the `RENDERER_THRESHOLD` environment variable.
