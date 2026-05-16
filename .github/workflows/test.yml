@@ -397,37 +397,6 @@ jobs:
             });
           }
 
-  compile-hw3:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install CUDA toolkit
-      uses: Jimver/cuda-toolkit@v0.2.19
-      with:
-        cuda: '12.4.0'
-        method: network
-        sub-packages: '["nvcc", "cudart-dev", "cublas-dev"]'
-
-    - name: Compile hw3 kernel
-      run: |
-        cd hw3
-        nvcc -O3 -std=c++14 \
-          -gencode=arch=compute_75,code=sm_75 \
-          --dryrun \
-          main.cu -o main -lcublas 2>&1 | tee /tmp/hw3_compile.log
-        echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_ENV
-
-    - name: Report compile result
-      run: |
-        if grep -qi "error" /tmp/hw3_compile.log; then
-          echo "::error::hw3 compilation failed"
-          cat /tmp/hw3_compile.log
-          exit 1
-        else
-          echo "hw3 compiled successfully (dry run)"
-        fi
-
   test-hw3:
     runs-on: [self-hosted, gpu]
     steps:
@@ -436,8 +405,9 @@ jobs:
     - name: Build hw3
       run: |
         cd hw3
+        ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
         nvcc -O3 -std=c++14 \
-          -gencode=arch=compute_$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.'),code=sm_$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.') \
+          -gencode=arch=compute_${ARCH},code=sm_${ARCH} \
           main.cu -o main -lcublas
 
     - name: Run correctness test
