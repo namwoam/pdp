@@ -5,6 +5,7 @@ on:
     paths:
     - 'hw1/spmv_openmp.c'
     - 'hw2/**'
+    - 'hw3/**'
     - '.github/workflows/test.yml'
 
 permissions:
@@ -370,6 +371,81 @@ jobs:
           const fs = require('fs');
           const body = fs.readFileSync('/tmp/runtime_hw2_result.md', 'utf8');
           const marker = '<!-- hw2-runtime -->';
+          const fullBody = marker + '\n' + body;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c => c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: fullBody,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: fullBody,
+            });
+          }
+
+  test-hw3:
+    runs-on: [self-hosted, gpu]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build hw3
+      run: |
+        cd hw3
+        ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
+        nvcc -O3 -std=c++14 \
+          -gencode=arch=compute_${ARCH},code=sm_${ARCH} \
+          main.cu -o main -lcublas
+
+    - name: Run correctness test
+      id: test_hw3
+      run: |
+        cd hw3
+        {
+          echo "## HW3 CUDA SGEMM Correctness"
+          echo ""
+
+          output=$(./main 1 2>&1)
+          echo "\`\`\`"
+          echo "$output"
+          echo "\`\`\`"
+
+          if echo "$output" | grep -q "verification failed"; then
+            echo ""
+            echo ":x: **Verification failed**"
+          else
+            echo ""
+            echo ":white_check_mark: **All sizes verified against cuBLAS (tol 1e-2)**"
+          fi
+        } > /tmp/test_hw3_result.md
+
+        cat /tmp/test_hw3_result.md
+
+        if grep -q "verification failed" /tmp/test_hw3_result.md; then
+          exit 1
+        fi
+
+    - name: Comment on PR (hw3)
+      if: always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('/tmp/test_hw3_result.md', 'utf8');
+          const marker = '<!-- hw3-sgemm-test -->';
           const fullBody = marker + '\n' + body;
 
           const { data: comments } = await github.rest.issues.listComments({

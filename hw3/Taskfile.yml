@@ -1,0 +1,38 @@
+version: '3'
+
+vars:
+  NVCC: nvcc
+  SRC: main.cu
+  TARGET: main
+  LDFLAGS: -lcublas
+  NVCC_FLAGS: -O3 -std=c++14
+  CUDA_ARCH: '70'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    desc: Compile the CUDA SGEMM binary
+    cmds:
+      - >
+        {{.NVCC}} {{.NVCC_FLAGS}}
+        -gencode=arch=compute_{{.CUDA_ARCH}},code=sm_{{.CUDA_ARCH}}
+        {{.SRC}} -o {{.TARGET}} {{.LDFLAGS}}
+    sources:
+      - '**/*.cu'
+      - '**/*.h'
+    generates:
+      - '{{.TARGET}}'
+
+  run:
+    desc: Run kernel 1 (student) against cuBLAS reference
+    deps: [build]
+    cmds:
+      - ./{{.TARGET}} 1
+
+  clean:
+    desc: Remove compiled binary
+    cmds:
+      - rm -f {{.TARGET}}
