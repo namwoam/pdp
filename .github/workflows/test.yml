@@ -405,7 +405,7 @@ jobs:
     - name: Build hw3
       run: |
         cd hw3
-ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
+        ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
         nvcc -O3 -std=c++14 \
           -gencode=arch=compute_${ARCH},code=sm_${ARCH} \
           main.cu -o main -lcublas
