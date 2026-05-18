@@ -26,7 +26,7 @@
 
 #define BM 128
 #define BN 128
-#define BK 16
+#define BK 8
 #define WM 64
 #define WN 64
 #define WNITER 4
