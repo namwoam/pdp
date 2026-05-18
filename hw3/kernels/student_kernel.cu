@@ -73,8 +73,22 @@ StudentKernel(int M, int N, int K, float alpha,
     __shared__ float As[2][BK * BM];
     __shared__ float Bs[2][BK * BN];
 
-    const int block_row = blockIdx.y * BM;
-    const int block_col = blockIdx.x * BN;
+    // Block swizzle for L2 reuse: iterate within SUPER_M x gridDim.x
+    // super-blocks so 8 consecutive blocks reuse the same B column strip.
+    constexpr int SUPER_M = 8;
+    int br_idx, bc_idx;
+    if (gridDim.y >= SUPER_M) {
+        int pid     = blockIdx.y * gridDim.x + blockIdx.x;
+        int super   = pid / (SUPER_M * gridDim.x);
+        int local   = pid - super * SUPER_M * gridDim.x;
+        br_idx = super * SUPER_M + (local % SUPER_M);
+        bc_idx = local / SUPER_M;
+    } else {
+        br_idx = blockIdx.y;
+        bc_idx = blockIdx.x;
+    }
+    const int block_row = br_idx * BM;
+    const int block_col = bc_idx * BN;
 
     A += block_row * K;
     B += block_col;
