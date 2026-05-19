@@ -1,0 +1,9 @@
+Using device: NVIDIA TITAN RTX
+Max size: 4096
+Selected kernel: 0
+Running size: 128... 	avg time: 0.000008s, performance: 548.924 GFLOPS
+Running size: 256... 	avg time: 0.000012s, performance: 2828.790 GFLOPS
+Running size: 512... 	avg time: 0.000041s, performance: 6617.605 GFLOPS
+Running size: 1024... 	avg time: 0.000230s, performance: 9340.940 GFLOPS
+Running size: 2048... 	avg time: 0.001591s, performance: 10798.130 GFLOPS
+Running size: 4096... 	avg time: 0.009663s, performance: 14222.783 GFLOPS

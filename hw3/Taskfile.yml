@@ -32,6 +32,17 @@ tasks:
     cmds:
       - ./{{.TARGET}} 1
 
+  bench:
+    desc: Run cuBLAS and student kernels, dump raw output to data/raw_*.txt
+    deps: [build]
+    cmds:
+      - ./bench.sh
+
+  figures:
+    desc: Generate report figures and CSVs from data/raw_*.txt
+    cmds:
+      - poetry run python scripts/generate_report_assets.py
+
   clean:
     desc: Remove compiled binary
     cmds:
