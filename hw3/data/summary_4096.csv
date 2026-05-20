@@ -1,0 +1,3 @@
+kernel,avg_time_s,gflops
+cublas,0.009663,14222.783
+student,0.010697,12847.869

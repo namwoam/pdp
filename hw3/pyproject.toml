@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "hw3-report-tools"
+version = "0.1.0"
+description = "Local tooling for HW3 SGEMM benchmark figures."
+authors = ["Team12"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pandas = "^2.2.2"
+matplotlib = "^3.9.2"
+seaborn = "^0.13.2"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
