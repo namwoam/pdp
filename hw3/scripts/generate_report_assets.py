@@ -4,7 +4,7 @@ Parses the raw stdout dumps written by ./bench.sh into data/raw_*.txt,
 emits data/results.csv, data/summary_4096.csv, and the figure/*.png set
 used in the report.
 """
-from __future__ import annotations
+# from __future__ import annotations
 
 import re
 from pathlib import Path
