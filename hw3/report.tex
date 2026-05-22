@@ -46,12 +46,12 @@ benchmark result.
 \toprule
 Step & GFLOPS @ 4096 & \% of cuBLAS \\
 \midrule
-Naive (global memory only)                    &    200 &  1.4\% \\
-+ Shared-memory tiling                        &  1,800 & 12.9\% \\
-+ 1-D block tiling (register accumulators)    &  3,500 & 25.0\% \\
-+ 2-D block tiling (TM$\times$TN per thread)  &  6,200 & 44.3\% \\
-+ Vectorized \texttt{float4} loads/stores     &  7,400 & 52.9\% \\
-+ Warp tiling (2$\times$2 warp grid, WNITER)  &  8,200 & 58.6\% \\
+Naive (global memory only)                    &  2,026 & 14.5\% \\
++ Shared-memory tiling                        &  4,109 & 29.4\% \\
++ 1-D block tiling (register accumulators)    &  7,985 & 57.1\% \\
++ 2-D block tiling (TM$\times$TN per thread)  & 11,195 & 80.0\% \\
++ Vectorized \texttt{float4} loads/stores     & 11,038 & 78.9\% \\
++ Warp tiling (2$\times$2 warp grid, WNITER)  & 12,159 & 86.9\% \\
 + Double buffering (software pipeline)        & \textbf{12,890} & \textbf{92.1\%} \\
 \bottomrule
 \end{tabular}
