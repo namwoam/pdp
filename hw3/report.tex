@@ -31,7 +31,7 @@
 
 Experiments were conducted on an NVIDIA Tesla V100-SXM2-32GB (sm\_70, 14.1 TFLOPS FP32 peak, 6 MB L2).
 The harness benchmarks square matrices $M = N = K \in \{128, 256, 512, 1024, 2048, 4096\}$,
-averaging over ten warm runs.
+timing 50 iterations with \texttt{cudaEvent} after one warm-up run.
 cuBLAS SGEMM (\texttt{CUBLAS\_GEMM\_DEFAULT\_TENSOR\_OP}) is the reference.
 
 \section{Optimization Progression}
