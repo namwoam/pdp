@@ -1,9 +1,9 @@
-Using device: NVIDIA TITAN RTX
+Using device: Tesla V100-SXM2-32GB
 Max size: 4096
 Selected kernel: 0
-Running size: 128... 	avg time: 0.000008s, performance: 548.924 GFLOPS
-Running size: 256... 	avg time: 0.000012s, performance: 2828.790 GFLOPS
-Running size: 512... 	avg time: 0.000041s, performance: 6617.605 GFLOPS
-Running size: 1024... 	avg time: 0.000230s, performance: 9340.940 GFLOPS
-Running size: 2048... 	avg time: 0.001591s, performance: 10798.130 GFLOPS
-Running size: 4096... 	avg time: 0.009663s, performance: 14222.783 GFLOPS
+Running size: 128... 	avg time: 0.000008s, performance: 526.690 GFLOPS
+Running size: 256... 	avg time: 0.000013s, performance: 2670.579 GFLOPS
+Running size: 512... 	avg time: 0.000034s, performance: 7845.687 GFLOPS
+Running size: 1024... 	avg time: 0.000207s, performance: 10387.115 GFLOPS
+Running size: 2048... 	avg time: 0.001352s, performance: 12709.296 GFLOPS
+Running size: 4096... 	avg time: 0.009822s, performance: 13993.339 GFLOPS

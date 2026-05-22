@@ -1,13 +1,13 @@
 kernel,size,avg_time_s,gflops,label
-cublas,128,8e-06,548.924,"cuBLAS (FP32, reference)"
-cublas,256,1.2e-05,2828.79,"cuBLAS (FP32, reference)"
-cublas,512,4.1e-05,6617.605,"cuBLAS (FP32, reference)"
-cublas,1024,0.00023,9340.94,"cuBLAS (FP32, reference)"
-cublas,2048,0.001591,10798.13,"cuBLAS (FP32, reference)"
-cublas,4096,0.009663,14222.783,"cuBLAS (FP32, reference)"
-student,128,3.3e-05,127.883,Student kernel
-student,256,5.6e-05,604.583,Student kernel
-student,512,0.000103,2604.931,Student kernel
-student,1024,0.000225,9546.964,Student kernel
-student,2048,0.001438,11951.116,Student kernel
-student,4096,0.010697,12847.869,Student kernel
+cublas,128,8e-06,526.69,"cuBLAS (FP32, reference)"
+cublas,256,1.3e-05,2670.579,"cuBLAS (FP32, reference)"
+cublas,512,3.4e-05,7845.687,"cuBLAS (FP32, reference)"
+cublas,1024,0.000207,10387.115,"cuBLAS (FP32, reference)"
+cublas,2048,0.001352,12709.296,"cuBLAS (FP32, reference)"
+cublas,4096,0.009822,13993.339,"cuBLAS (FP32, reference)"
+student,128,5e-05,83.995,Student kernel
+student,256,9.2e-05,365.365,Student kernel
+student,512,0.000174,1545.974,Student kernel
+student,1024,0.000355,6054.254,Student kernel
+student,2048,0.00156,11009.647,Student kernel
+student,4096,0.010662,12889.999,Student kernel
